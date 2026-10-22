@@ -187,6 +187,14 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   Windows workspace. Required Linux isolation tests and the full suite remain to be run by the
   declared Linux/Python 3.12 CI target; this is not a claim of local security validation.
 
+## CI host capability note
+
+GitHub's default hosted-job sandbox blocked Bubblewrap from creating its required nested user
+namespace, causing parser imports to fail closed with `isolation_unavailable`. The Linux CI job
+therefore runs in an explicitly privileged Ubuntu 24.04 container; this supplies the *test host*
+capability for Bubblewrap/libseccomp rather than weakening the application boundary or selecting
+portable parser mode. The exact remote outcome remains CI evidence, not a cross-platform claim.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice

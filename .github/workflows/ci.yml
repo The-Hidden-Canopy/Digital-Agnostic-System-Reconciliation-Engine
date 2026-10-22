@@ -5,6 +5,13 @@ permissions:
 jobs:
   linux-python312:
     runs-on: ubuntu-24.04
+    # Bubblewrap's user/mount/PID namespaces are part of the application test
+    # contract. GitHub's default job sandbox blocks nested namespace creation,
+    # so run the test host in an explicitly privileged Ubuntu container rather
+    # than weakening parser isolation or selecting portable mode in CI.
+    container:
+      image: ubuntu:24.04
+      options: --privileged
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -16,8 +23,8 @@ jobs:
           node-version: '22'
       - name: Install required parser isolation
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes bubblewrap libseccomp2
+          apt-get update
+          apt-get install --yes bubblewrap libseccomp2
       - name: Install pinned Python test/build dependencies
         run: |
           python -m pip install --require-hashes -r tools/release-build-requirements.txt -r tools/release-pdf-requirements.txt
