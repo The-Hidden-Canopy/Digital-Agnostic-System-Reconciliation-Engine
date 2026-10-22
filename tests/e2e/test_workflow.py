@@ -4,11 +4,12 @@ import threading
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from tests.helpers import TUTORIAL, WorkspaceCase, verdict_of
 from verifier_lab.canonical import canonical_bytes, record_id, sha256_digest
 from verifier_lab.checker import verify_package
-from verifier_lab.service import ServiceError
+from verifier_lab.service import ExtractionFailure, ServiceError
 
 SPEC_KEYS = ["limits.max_upload_kb", "limits.retries", "timeout.seconds", "region", "audit.enabled",
              "sql.table.users.column.email.not_null"]
@@ -266,6 +267,21 @@ class StalenessAndRevisions(WorkspaceCase):
             self.svc.decide(old["id"], "APPROVE", old["etag"])
         self.assertEqual(cm.exception.code, "candidate_superseded")
         self.assertEqual(self.svc.get_source(sql["id"])["attempts"], 2)
+
+    def test_explicit_retry_creates_an_attempt_and_failed_retry_remains_visible(self):
+        source = self.s["cfg"]
+        first = self.svc.reextract(source["id"])
+        self.assertFalse(first["deduplicated"])
+        self.assertEqual(self.svc.wait_job(first["job_id"])["state"], "SUCCEEDED")
+        self.assertEqual(self.svc.get_source(source["id"])["attempts"], 2)
+
+        with mock.patch("verifier_lab.service.extract_isolated", side_effect=ExtractionFailure("wall_clock_timeout")):
+            failed = self.svc.reextract(source["id"])
+            self.assertEqual(self.svc.wait_job(failed["job_id"])["state"], "FAILED")
+        view = self.svc.get_source(source["id"])
+        self.assertEqual(view["attempt"]["state"], "EXTRACTED")
+        self.assertEqual((view["latest_attempt"]["state"], view["latest_attempt"]["error"]["code"]),
+                         ("FAILED", "wall_clock_timeout"))
 
 
 class ReviewSemantics(WorkspaceCase):

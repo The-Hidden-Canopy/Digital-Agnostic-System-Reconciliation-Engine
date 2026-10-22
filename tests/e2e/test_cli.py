@@ -58,6 +58,15 @@ class Cli(unittest.TestCase):
             rc, run, err = cli("check", "--evidence", out[0]["source"]["id"], ws=ws)
             self.assertEqual(rc, 2)        # nothing approved: unreviewed machine suggestions never run as claims
 
+    def test_reextract_creates_a_distinct_attempt(self):
+        with tempfile.TemporaryDirectory() as ws:
+            rc, out, _ = cli("import", str(TUTORIAL / "service-config.json"), ws=ws)
+            self.assertEqual(rc, 0, out)
+            rc, out, _ = cli("reextract", out[0]["source"]["id"], ws=ws)
+            self.assertEqual(rc, 0, out)
+            self.assertFalse(out["deduplicated"])
+            self.assertEqual((out["job"]["state"], out["source"]["attempts"]), ("SUCCEEDED", 2))
+
 
 if __name__ == "__main__":
     unittest.main()

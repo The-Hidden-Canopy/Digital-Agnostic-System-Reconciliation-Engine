@@ -197,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("import", help="import PDF/JSON/Markdown/SQL files")
     s.add_argument("files", nargs="+")
     s.add_argument("--dialect", default=None)
+    s = sub.add_parser("reextract", help="create a new extraction attempt for an admitted source")
+    s.add_argument("source_id")
+    s.add_argument("--dialect", default=None, help="SQL dialect; defaults to the latest attempt's dialect")
     s = sub.add_parser("candidates", help="list candidate claims")
     s.add_argument("--source")
     s.add_argument("--status")
@@ -317,6 +320,12 @@ def main(argv: list[str] | None = None) -> int:
                 results.append(res)
             _out(results)
             return OK if all((r.get("job") or {"state": "SUCCEEDED"})["state"] == "SUCCEEDED" for r in results) else FAILED
+        if args.cmd == "reextract":
+            res = svc.reextract(args.source_id, args.dialect)
+            res["job"] = svc.wait_job(res["job_id"])
+            res["source"] = svc.get_source(args.source_id)
+            _out(res)
+            return OK if res["job"]["state"] == "SUCCEEDED" else FAILED
         if args.cmd == "candidates":
             _out(svc.list_candidates(source_id=args.source, status=args.status, limit=500))
             return OK

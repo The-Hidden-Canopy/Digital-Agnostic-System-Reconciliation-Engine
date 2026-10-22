@@ -172,6 +172,21 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   review targets, and retains `accessibility.json`. CI installs the pinned test-only audit tool.
   Incomplete/manual checks remain visible; a screen-reader audit is still outstanding.
 
+## Added in increment fourteen (extraction retry recovery)
+
+* Explicit re-extraction always creates a new immutable extraction attempt, even when an earlier
+  attempt with the same source bytes and dialect succeeded. Ordinary same-byte imports remain
+  deduplicated.
+* Source views distinguish the currently usable extraction from the latest attempt. Thus a failed
+  retry is visible as an operational error without invalidating candidates that remain bound to the
+  earlier successful attempt.
+* `verifier-lab reextract SOURCE_ID [--dialect ...]` and workbench retry controls expose the same
+  shared-service behavior for all admitted formats; SQL defaults to its most recently declared
+  dialect.
+* Focused retry tests passed only in explicit portable development configuration on the recovered
+  Windows workspace. Required Linux isolation tests and the full suite remain to be run by the
+  declared Linux/Python 3.12 CI target; this is not a claim of local security validation.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice

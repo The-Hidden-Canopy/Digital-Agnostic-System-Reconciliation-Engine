@@ -143,7 +143,7 @@ async function viewImport(id, soft = false) {
   const table = h("div", { class: "tablewrap" }, h("table", {},
     h("thead", {}, h("tr", {}, ["Source", "Type", "Size", "Extraction", "Candidates", ""].map((t) => h("th", { text: t })))),
     h("tbody", {}, sources.length ? sources.map((s) => {
-      const a = s.attempt || {};
+      const a = s.latest_attempt || s.attempt || {};
       const cc = s.candidate_counts || {};
       return h("tr", {},
         h("td", {}, h("a", { href: "#/import/" + enc(s.id), text: s.name }), s.superseded_by ? h("div", {}, badge("superseded", "b-warn")) : null),
@@ -173,20 +173,25 @@ async function sourceDetail(id) {
     const t = await api("GET", "sources/" + enc(id) + "/text");
     const regions = s.coverage_regions || [];
     const sqlSource = s.format === "sql";
+    const latest = s.latest_attempt || s.attempt;
     const reext = h("div", { class: "row" });
     if (sqlSource) {
-      const d = h("select", { "aria-label": "Dialect for re-extraction" }, ["generic", "postgresql", "mysql", "sqlite", "unresolved"].map((x) => h("option", { value: x, text: x })));
-      reext.append(d, h("button", { text: "Re-extract with this dialect", onclick: async () => {
+      const d = h("select", { "aria-label": "Dialect for re-extraction" }, ["generic", "postgresql", "mysql", "sqlite", "unresolved"].map((x) => h("option", { value: x, text: x, selected: x === (latest && latest.dialect) })));
+      reext.append(d, h("button", { text: latest && latest.state === "FAILED" ? "Retry extraction" : "Re-extract with this dialect", onclick: async () => {
         await api("POST", "sources/" + enc(id) + "/reextract", { body: { dialect: d.value } }); pollJobs(true);
+        announce("Re-extraction queued; previous extraction stays in history."); } }));
+    } else {
+      reext.append(h("button", { text: latest && latest.state === "FAILED" ? "Retry extraction" : "Re-extract", onclick: async () => {
+        await api("POST", "sources/" + enc(id) + "/reextract", { body: {} }); pollJobs(true);
         announce("Re-extraction queued; previous extraction stays in history."); } }));
     }
     put(box, h("div", { class: "card" },
       h("h2", { id: "src-h", tabIndex: -1, text: "Source: " + s.name }),
       h("dl", { class: "kv" }, h("dt", { text: "Digest" }), h("dd", { class: "mono", text: s.digest }),
         h("dt", { text: "Format" }), h("dd", { text: s.format }),
-        h("dt", { text: "Extraction" }), h("dd", { text: s.attempt ? `${s.attempt.state} - coverage ${s.attempt.coverage || "n/a"} - ${s.fact_count ?? 0} facts` : "none" }),
+        h("dt", { text: "Extraction" }), h("dd", { text: latest ? `${latest.state} - coverage ${latest.coverage || "n/a"} - ${s.fact_count ?? 0} facts` : "none" }),
         s.manifest ? [h("dt", { text: "Parser" }), h("dd", { text: `${s.manifest.parser} ${s.manifest.parser_version} (adapter v${s.manifest.adapter_version})` })] : null),
-      s.attempt && s.attempt.error ? h("div", { class: "notice bad", text: "Extraction failed: " + s.attempt.error.code }) : null, reext,
+      latest && latest.error ? h("div", { class: "notice bad", text: "Extraction failed: " + latest.error.code }) : null, reext,
       h("h3", { text: "Coverage by region" }),
       h("p", { class: "muted", text: "Syntax coverage and claim interpretation are separate: a region can be parsed yet yield no claim." }),
       h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Kind", "Bytes", "Status", "Interpretation", "Reasons"].map((x) => h("th", { text: x })))),

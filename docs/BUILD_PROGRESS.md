@@ -52,6 +52,21 @@ invalid/stale selections, idempotency, persistence, source replacement, HTTP aut
 non-equality built-in predicates through the service/CLI, export verification and provenance tampering.
 The browser journey exercises the new flow against an installed wheel.
 
+## Extraction retry continuation
+
+An explicit re-extraction now always creates a separate, auditable attempt rather
+than being treated as a duplicate upload. The source projection preserves the last
+usable extraction for claims and provenance while separately exposing the latest
+attempt and any operational error, so a failed retry cannot be hidden by older
+successful output. The shared service, CLI (`reextract`) and workbench now offer
+the path for every admitted format; SQL retries retain the prior declared dialect
+unless the user chooses another one.
+
+Focused retry regression checks passed under explicitly selected portable
+development configuration on the recovered Windows workspace. The required
+Linux/Bubblewrap full suite remains a CI/host-validation requirement; the local
+Windows environment correctly fails closed in required parser mode.
+
 ## Full laboratory continuation
 
 All three synthetic systems named by chapter 00 now have independent reference/candidate transitions,

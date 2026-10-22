@@ -205,7 +205,7 @@ class Service:
 
     # ------------------------------------------------------------------- import
     def import_source(self, data: bytes, filename: str | None, declared_type: str | None = None,
-                      dialect: str | None = None, replaces: str | None = None) -> dict:
+                      dialect: str | None = None, replaces: str | None = None, *, retry: bool = False) -> dict:
         try:
             adm = admit(data, filename, declared_type, self.store.blobs, self.admission)
         except AdmissionError as exc:
@@ -228,7 +228,7 @@ class Service:
                 db.execute("INSERT INTO sources(id,digest,size,display_name,detected_format,created_seq,created_at,replaces)"
                            " VALUES(?,?,?,?,?,?,?,?)", (source_id, adm.digest, adm.size, adm.display_name,
                                                         adm.detected_format, seq, now_iso(), replaces))
-            existing = db.execute(
+            existing = None if retry else db.execute(
                 "SELECT id, state FROM attempts WHERE source_id=? AND COALESCE(dialect,'')=? AND state IN ('QUEUED','PARSING','EXTRACTED') ORDER BY created_seq DESC LIMIT 1",
                 (source_id, dialect or "")).fetchone()
             if existing:
@@ -254,7 +254,13 @@ class Service:
     def reextract(self, source_id: str, dialect: str | None = None) -> dict:
         src = self._source_row(source_id)
         data = read_blob(self.store.blobs, src["digest"])
-        return self.import_source(data, src["display_name"], src["detected_format"], dialect)
+        # An explicit retry is not a duplicate upload: it must preserve a distinct,
+        # auditable attempt even when the previous extraction was successful.
+        if dialect is None and src["detected_format"] == "sql":
+            latest = self.store.q1("SELECT dialect FROM attempts WHERE source_id=? ORDER BY created_seq DESC LIMIT 1",
+                                   (source_id,))
+            dialect = latest["dialect"] if latest else None
+        return self.import_source(data, src["display_name"], src["detected_format"], dialect, retry=True)
 
     def _extract_job(self, ctx: JobContext, source_id: str, attempt_id: str, fmt: str, dialect: str | None,
                      replaces: str | None) -> dict:
@@ -309,6 +315,7 @@ class Service:
         row = self._source_row(source_id)
         attempts = self.store.q("SELECT * FROM attempts WHERE source_id=? ORDER BY created_seq", (source_id,))
         current = next((a for a in attempts if a["id"] == row["current_attempt"]), None) or (attempts[-1] if attempts else None)
+        latest = attempts[-1] if attempts else None
         counts = Counter()
         if current:
             for r in self.store.q("SELECT id FROM candidates WHERE attempt_id=?", (current["id"],)):
@@ -319,6 +326,9 @@ class Service:
                 "attempt": None if not current else {
                     "id": current["id"], "state": current["state"], "coverage": current["summary"],
                     "dialect": current["dialect"], "error": jload(current["error_json"])},
+                "latest_attempt": None if not latest else {
+                    "id": latest["id"], "state": latest["state"], "coverage": latest["summary"],
+                    "dialect": latest["dialect"], "error": jload(latest["error_json"])},
                 "attempts": len(attempts), "candidate_counts": dict(counts)}
         if detail and current:
             rec = self._record_for_attempt(current)
