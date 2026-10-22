@@ -24,7 +24,10 @@ jobs:
       - name: Install required parser isolation
         run: |
           apt-get update
-          apt-get install --yes bubblewrap libseccomp2
+          # setup-python provides CPython, but its _sqlite3 extension links
+          # against the container image's system SQLite runtime.
+          apt-get install --yes bubblewrap libseccomp2 libsqlite3-0
+          python -c "import sqlite3; print(sqlite3.sqlite_version)"
       - name: Install pinned Python test/build dependencies
         run: |
           python -m pip install --require-hashes -r tools/release-build-requirements.txt -r tools/release-pdf-requirements.txt

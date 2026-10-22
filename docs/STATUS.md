@@ -193,7 +193,10 @@ GitHub's default hosted-job sandbox blocked Bubblewrap from creating its require
 namespace, causing parser imports to fail closed with `isolation_unavailable`. The Linux CI job
 therefore runs in an explicitly privileged Ubuntu 24.04 container; this supplies the *test host*
 capability for Bubblewrap/libseccomp rather than weakening the application boundary or selecting
-portable parser mode. The exact remote outcome remains CI evidence, not a cross-platform claim.
+portable parser mode. The minimal container also needs `libsqlite3-0` because the hosted CPython
+`_sqlite3` extension dynamically links against the image's system SQLite runtime; CI verifies that
+import before it starts the suite. The exact remote outcome remains CI evidence, not a
+cross-platform claim.
 
 ## Deliberate deviations from the docuseries
 
