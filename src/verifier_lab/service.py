@@ -957,6 +957,47 @@ class Service:
                 "signature": pkg["signature"], "witness": pkg["witness"],
                 "fresh_process_verification": verification["status"], "package": pkg}
 
+    # ------------------------------------------------------------------ advanced: composition analysis
+    def _pipeline_of(self, source_id: str, subject: str):
+        from . import composition as CP
+        from .canonical import strict_loads
+        src = self._source_row(source_id)
+        if src["detected_format"] != "json":
+            raise ServiceError(422, "not_a_json_source", "pipeline descriptions are JSON documents")
+        try:
+            doc = strict_loads(read_blob(self.store.blobs, src["digest"]), max_bytes=8_000_000, max_depth=24)
+        except Exception as exc:
+            raise ServiceError(422, "unreadable_pipeline_source", str(exc)[:200])
+        if not isinstance(doc, dict) or subject not in doc:
+            raise ServiceError(422, "pipeline_not_found", f"no '{subject}' object in {src['display_name']}")
+        try:
+            return src, CP.parse_pipeline(doc[subject])
+        except CP.PipelineError as exc:
+            raise ServiceError(422, "malformed_pipeline", str(exc))
+
+    def composition_analyze(self, source_id: str, subject: str = "pipeline", target: str | None = None) -> dict:
+        from . import composition as CP
+        src, pipe = self._pipeline_of(source_id, subject)
+        try:
+            analysis = CP.analyze(pipe, target or None)
+        except CP.PipelineError as exc:
+            raise ServiceError(422, "bad_target", str(exc))
+        depth: dict[str, int] = {}
+        for node in analysis["order"]:
+            depth[node] = max([depth[a] + 1 for a, b in analysis["edges"] if b == node and a in depth] or [0])
+        acts = [{"id": a["id"], "depth": depth.get(a["id"]), "in_scope": a["id"] in analysis["scope"]["evaluated"],
+                 "consumes": [{"artifact": c["artifact"], "requires": c["requires"]} for c in a["consumes"]],
+                 "produces": [{"artifact": x["artifact"], "tags": x["tags"], "generation": x["generation"]} for x in a["produces"]],
+                 "conversion": a["conversion"]} for a in pipe["activities"]]
+        return {"source": {"id": source_id, "name": src["display_name"]}, "subject": subject, "target": target,
+                "activities": acts, "external": pipe["external"], "same_generation": pipe["same_generation"], "analysis": analysis}
+
+    def composition_impact(self, old_id: str, new_id: str, subject: str = "pipeline") -> dict:
+        from . import composition as CP
+        _, old = self._pipeline_of(old_id, subject)
+        _, new = self._pipeline_of(new_id, subject)
+        return CP.impact(old, new)
+
     # ------------------------------------------------------------------ advanced: mutation campaigns
     CAMPAIGN_KERNELS = {
         "real": "The production rules and engine",

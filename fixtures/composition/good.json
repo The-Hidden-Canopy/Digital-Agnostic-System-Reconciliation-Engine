@@ -1,0 +1,70 @@
+{
+ "pipeline": {
+  "external": [
+   {
+    "artifact": "raw",
+    "tags": {
+     "unit": "seconds"
+    },
+    "generation": "g1",
+    "assumption": "supplied by the operator; not verified here"
+   }
+  ],
+  "activities": [
+   {
+    "id": "normalize",
+    "consumes": [
+     {
+      "artifact": "raw",
+      "requires": {
+       "unit": "seconds"
+      }
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "text",
+      "tags": {
+       "unit": "seconds",
+       "offsets": "normalized"
+      },
+      "generation": "g1"
+     }
+    ]
+   },
+   {
+    "id": "index",
+    "consumes": [
+     {
+      "artifact": "text",
+      "requires": {
+       "offsets": {
+        "in": [
+         "normalized"
+        ]
+       }
+      }
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "idx",
+      "tags": {
+       "offsets": "normalized"
+      },
+      "generation": "g1"
+     }
+    ],
+    "depends_on": [
+     "normalize"
+    ]
+   }
+  ],
+  "same_generation": [
+   [
+    "text",
+    "idx"
+   ]
+  ]
+ }
+}

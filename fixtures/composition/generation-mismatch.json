@@ -1,0 +1,33 @@
+{
+ "pipeline": {
+  "external": [],
+  "activities": [
+   {
+    "id": "p",
+    "produces": [
+     {
+      "artifact": "x",
+      "tags": {},
+      "generation": "g1"
+     }
+    ]
+   },
+   {
+    "id": "q",
+    "produces": [
+     {
+      "artifact": "y",
+      "tags": {},
+      "generation": "g2"
+     }
+    ]
+   }
+  ],
+  "same_generation": [
+   [
+    "x",
+    "y"
+   ]
+  ]
+ }
+}

@@ -148,6 +148,26 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   assert.ok((await page.innerText('main')).includes('sources from different generations'));
   assert.ok((await page.innerText('main')).includes('g6'));
 
+  // 4f. composition page: units mismatch is contradicted with the edge named; the converted version composes; targeting scopes it
+  const COMP = path.resolve(__dirname, '../../fixtures/composition/') + '/';
+  await page.goto(BASE + '#/import');
+  await page.setInputFiles('#files', ['units-mismatch.json', 'units-converted.json', 'scoped.json'].map((f) => COMP + f));
+  await page.click('button[type=submit]');
+  await page.waitForFunction(() => !/QUEUED|PARSING/.test(document.querySelector('main').innerText) && /scoped\.json/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
+  await page.waitForTimeout(1500);
+  await page.goto(BASE + '#/composition');
+  await page.waitForSelector('#c-src');
+  await page.selectOption('#c-src', { label: 'units-mismatch.json' });
+  await page.waitForSelector('text=gives "milliseconds"');
+  assert.ok((await page.innerText('main')).includes('CONTRADICTED'));
+  await page.selectOption('#c-src', { label: 'units-converted.json' });
+  await page.waitForSelector('.notice.ok');
+  await page.selectOption('#c-src', { label: 'scoped.json' });
+  await page.waitForSelector('text=INSUFFICIENT EVIDENCE');
+  await page.selectOption('#c-target', { label: 'only ancestors of report' });
+  await page.waitForSelector('.notice.ok');
+  assert.ok((await page.innerText('main')).includes('unresolved, not verified'));
+
   // 5. export + independent checker
   await page.goto(BASE + '#/export');
   const [download] = await Promise.all([page.waitForEvent('download'), page.click('button:has-text("Download package")')]);

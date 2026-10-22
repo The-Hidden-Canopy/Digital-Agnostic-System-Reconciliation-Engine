@@ -1,0 +1,33 @@
+{
+ "pipeline": {
+  "external": [],
+  "activities": [
+   {
+    "id": "a",
+    "depends_on": [
+     "b"
+    ],
+    "produces": [
+     {
+      "artifact": "x",
+      "tags": {},
+      "generation": "g1"
+     }
+    ]
+   },
+   {
+    "id": "b",
+    "depends_on": [
+     "a"
+    ],
+    "produces": [
+     {
+      "artifact": "y",
+      "tags": {},
+      "generation": "g1"
+     }
+    ]
+   }
+  ]
+ }
+}

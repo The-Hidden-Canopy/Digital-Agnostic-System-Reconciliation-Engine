@@ -282,7 +282,7 @@ function decisionForm(c) {
   const exp = c.predicate.arguments.expected;
   const status = h("div", { role: "status" });
   const action = h("select", { id: "d-action" }, [["APPROVE", "Approve as proposed"], ["APPROVE_WITH_EDIT", "Edit and approve"], ["REJECT", "Reject"], ["DEFER", "Defer"]].map(([v, t]) => h("option", { value: v, text: t })));
-  const pred = h("select", { id: "e-pred" }, [["fact.equals", "equals a value"], ["fact.numeric_bound", "numeric bound"], ["fact.present", "is present"], ["interval.relation", "interval relation between two activities"]].map(([v, t]) => h("option", { value: v, text: t })));
+  const pred = h("select", { id: "e-pred" }, [["fact.equals", "equals a value"], ["fact.numeric_bound", "numeric bound"], ["fact.present", "is present"], ["interval.relation", "interval relation between two activities"], ["composition.valid", "a pipeline description composes (tags, generations, units)"]].map(([v, t]) => h("option", { value: v, text: t })));
   const subject = h("input", { id: "e-subj", value: c.predicate.subject, size: 40 });
   const kind = h("select", { id: "e-kind" }, ["string", "integer", "decimal", "boolean", "null"].map((k) => h("option", { value: k, selected: k === exp.kind, text: k })));
   const val = h("input", { id: "e-val", value: exp.kind === "null" ? "" : String(exp.value) });
@@ -290,6 +290,7 @@ function decisionForm(c) {
   const bound = h("input", { id: "e-bound", value: exp.kind === "integer" || exp.kind === "decimal" ? exp.value : "" });
   const ileft = h("input", { id: "e-left" }), iright = h("input", { id: "e-right" }), icoord = h("input", { id: "e-coord", value: "seconds" });
   const irel = h("select", { id: "e-rel" }, ["precedes", "no_overlap", "overlaps"].map((r) => h("option", { value: r, text: r })));
+  const cptarget = h("input", { id: "e-target", placeholder: "activity id (optional: only its ancestors are evaluated)" });
   const app = h("select", { id: "e-app" }, h("option", { value: "APPLICABLE", text: "Applicable (default)" }), h("option", { value: "NOT_APPLICABLE", text: "Not applicable (requires rationale and scope)" }));
   const rat = h("input", { id: "e-rat", size: 50 }), scope = h("input", { id: "e-scope", size: 50 });
   const reason = h("textarea", { id: "d-reason" });
@@ -301,12 +302,16 @@ function decisionForm(c) {
       h("p", { class: "muted", text: "Evidence must state <name>.start and <name>.end (optionally _min/_max for uncertainty) in one coordinate. Overlapping uncertainty gives insufficient evidence, never a guess." }),
       h("label", { for: "e-left", text: "Left activity name" }), ileft, h("label", { for: "e-right", text: "Right activity name" }), iright,
       h("label", { for: "e-rel", text: "Relation" }), irel, h("label", { for: "e-coord", text: "Shared coordinate (stated assumption, e.g. seconds since one clock)" }), icoord),
+    h("div", { id: "e-cp", hidden: true },
+      h("p", { class: "muted", text: "Set the subject above to the key that holds the pipeline object in the evidence document (e.g. pipeline). Overall support needs every obligation; assumptions stay visible." }),
+      h("label", { for: "e-target", text: "Target activity (optional)" }), cptarget),
     h("label", { for: "e-app", text: "Applicability" }), app,
     h("div", { id: "e-na", hidden: true }, h("label", { for: "e-rat", text: "Rationale" }), rat, h("label", { for: "e-scope", text: "Scope of the decision" }), scope));
   const sync = () => {
     edit.hidden = action.value !== "APPROVE_WITH_EDIT";
     $("#e-eq", edit).hidden = pred.value !== "fact.equals"; $("#e-nb", edit).hidden = pred.value !== "fact.numeric_bound";
     $("#e-iv", edit).hidden = pred.value !== "interval.relation";
+    $("#e-cp", edit).hidden = pred.value !== "composition.valid";
     $("#e-na", edit).hidden = app.value !== "NOT_APPLICABLE";
   };
   [action, pred, app].forEach((e) => e.addEventListener("change", sync));
@@ -323,6 +328,7 @@ function decisionForm(c) {
       } else if (pred.value === "fact.numeric_bound") {
         const t = bound.value.trim(); args.op = op.value; args.bound = { kind: /^-?\d+$/.test(t) ? "integer" : "decimal", value: t };
       }
+      if (pred.value === "composition.valid" && cptarget.value.trim()) args.target = cptarget.value.trim();
       if (pred.value === "interval.relation") Object.assign(args, { left: ileft.value, right: iright.value, relation: irel.value, coord: icoord.value });
       if (app.value === "NOT_APPLICABLE") args.applicability = { decision: "NOT_APPLICABLE", rationale: rat.value, scope: scope.value };
       body.edit = { predicate: pred.value, subject: subject.value, arguments: args };
@@ -487,6 +493,15 @@ async function viewFindings(runId, claimId) {
   }
 }
 
+function compositionObligations(an) {
+  return [h("h3", { text: "Composition obligations (each keeps its own verdict)" }), h("p", { class: "muted", text: an.scope.statement }),
+    h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Obligation", "Verdict", "Reason", "Witness"].map((t) => h("th", { text: t })))),
+      h("tbody", {}, an.obligations.map((o) => h("tr", {}, h("td", {}, h("code", { text: o.id })), h("td", {}, verdictBadge(o.verdict)), h("td", { text: o.reason.replace(/_/g, " ") }),
+        h("td", { class: "mono", text: o.witness.mismatches ? o.witness.mismatches.map((m) => `${o.witness.producer} gives ${m.tag}=${JSON.stringify(m.guarantee)}, ${o.witness.consumer} requires ${JSON.stringify(m.requirement)}`).join("; ")
+          : o.witness.cycle ? o.witness.cycle.join(" → ") : o.witness.generations ? JSON.stringify(o.witness.generations) : o.witness.missing ? JSON.stringify(o.witness.missing) : "" })))))),
+    an.conditional_on.length ? h("div", { class: "notice warn" }, h("strong", { text: "Conditional on: " }), h("ul", {}, an.conditional_on.map((c) => h("li", { text: c })))) : null];
+}
+
 function purposesCard(run) {
   return h("div", { class: "card" }, h("h2", { text: "Purpose assessments" }),
     h("div", { class: "notice", text: "Each purpose states what this evidence suffices for. It is never a statement that a package is simply 'complete'. Every obligation keeps its own verdict." }),
@@ -526,6 +541,7 @@ function findingDetail(box, f, run) {
     f.verdict === "HUMAN_REVIEW_REQUIRED" ? h("div", { class: "notice", text: "The machine could not decide. A human determination is needed; this is not a machine-proven finding." }) : null,
     ev.length ? [h("h3", { text: "Evidence examined" }), ev.map((e) => h("div", {}, h("p", {}, h("strong", { text: e.source_name }), " observed ", h("code", { text: fmtVal(e.value) }), (e.qualifiers || []).length ? " " : null, (e.qualifiers || []).map((q) => badge(q, "b-warn"))),
       h("pre", { class: "src", tabIndex: 0 }, e.before, h("mark", { text: e.token }), e.after)))] : null,
+    w.analysis ? compositionObligations(w.analysis) : null,
     (w.unusable_sources || []).length ? h("div", { class: "notice warn", text: "Some selected evidence could not be read: " + w.unusable_sources.map((u) => u.coverage).join(", ") }) : null,
     h("details", {}, h("summary", { text: "Advanced: rule, identities, raw witness" }),
       h("dl", { class: "kv" }, h("dt", { text: "Rule" }), h("dd", { text: `${f.rule_id} v${f.rule_version}` }), h("dt", { text: "Finding id" }), h("dd", { class: "mono", text: f.id }),
@@ -606,6 +622,7 @@ async function viewAdvanced() {
   if (!live()) return;
   put(main, h("h1", { text: "Advanced: experiments" }),
     h("p", {}, h("a", { href: "#/campaign", text: "Mutation and metamorphic campaigns →" }), " - does the verifier itself catch defects?"),
+    h("p", {}, h("a", { href: "#/composition", text: "Composition analysis →" }), " - do valid parts make a valid whole (units, tags, generations)?"),
     h("div", { class: "notice", text: "Optional laboratory tools on a fictional key-value store. Defects are deliberately injected so you can see the laboratory catch them. None of this is needed for the Import → Export workflow." }),
     h("div", { class: "card" }, h("h2", { text: "Replay and checkpoint" }),
       h("label", { for: "x-seed", text: "Seed" }), seed, h("label", { for: "x-ops", text: "Operations (0-400)" }), ops, h("label", { for: "x-defect", text: "Injected defect" }), defect,
@@ -622,6 +639,64 @@ async function viewAdvanced() {
       h("label", { for: "c-w", text: "Writer" }), crashSel, h("label", { for: "c-r", text: "Recovery" }), crashRec,
       h("div", { class: "row", style: "margin-top:.6rem" }, crashBtn)),
     out);
+}
+
+/* -------------------------------------------------------------- composition */
+async function viewComposition(sourceId) {
+  setNav("");
+  const live = begin();
+  const sources = (await api("GET", "sources")).items.filter((x) => x.format === "json" && x.attempt && x.attempt.state === "EXTRACTED" && !x.superseded_by);
+  const sel = h("select", { id: "c-src", onchange: () => (location.hash = "#/composition/" + enc(sel.value)) }, h("option", { value: "", text: "Choose a JSON source…" }),
+    sources.map((x) => h("option", { value: x.id, selected: x.id === sourceId, text: x.name })));
+  const subject = h("input", { id: "c-subj", value: "pipeline", size: 14 });
+  const out = h("div", { id: "c-out", role: "status", "aria-live": "polite" });
+  if (!live()) return;
+  put(main, h("h1", { text: "Advanced: does the whole compose?" }),
+    h("div", { class: "notice", text: "Parts can each be valid while their composition is not: units, offsets or generations can disagree across an edge. This page reads a pipeline description (data only), keeps every obligation separate, and never infers a unit conversion - one must be declared and match an exact registered factor." }),
+    h("div", { class: "card" }, h("label", { for: "c-src", text: "Pipeline source" }), sel, h("label", { for: "c-subj", text: "Key holding the pipeline object" }), subject,
+      h("p", { class: "muted" }, "Import a JSON file from ", h("a", { href: "#/import", text: "Import" }), ", e.g. fixtures/composition/units-mismatch.json.")), out);
+  if (sourceId) await analyzeComposition(out, sourceId, subject.value, "", sources);
+}
+
+async function analyzeComposition(out, sourceId, subject, target, sources) {
+  put(out, h("p", { class: "muted", text: "Analyzing…" }));
+  let r;
+  try { r = await api("GET", `composition/${enc(sourceId)}?subject=${enc(subject)}` + (target ? "&target=" + enc(target) : "")); } catch (e) { put(out, errorBox(e)); return; }
+  const an = r.analysis, V = { SUPPORTED: "ok", CONTRADICTED: "bad", INSUFFICIENT_EVIDENCE: "warn", INVALID_EVIDENCE: "bad" };
+  const tsel = h("select", { id: "c-target", "aria-label": "Target activity", onchange: () => analyzeComposition(out, sourceId, subject, tsel.value, sources) },
+    h("option", { value: "", text: "Whole pipeline" }), r.activities.map((a) => h("option", { value: a.id, selected: a.id === target, text: "only ancestors of " + a.id })));
+  // layered SVG; the tables below carry exactly the same information
+  const depths = {}; r.activities.forEach((a) => { if (a.depth != null) (depths[a.depth] = depths[a.depth] || []).push(a); });
+  const W = 150, H = 40, GX = 60, GY = 22, cols = Object.keys(depths).length, rows = Math.max(1, ...Object.values(depths).map((x) => x.length));
+  const pos = {}; Object.entries(depths).forEach(([d, list]) => list.forEach((a, i) => (pos[a.id] = { x: 10 + d * (W + GX), y: 10 + i * (H + GY) })));
+  const ns = "http://www.w3.org/2000/svg", mk = (t, at) => { const e = document.createElementNS(ns, t); Object.entries(at).forEach(([k, v]) => e.setAttribute(k, v)); return e; };
+  const svg = mk("svg", { width: 20 + cols * (W + GX), height: 20 + rows * (H + GY), "aria-hidden": "true", role: "img" });
+  const colour = { ok: "var(--ok)", bad: "var(--bad)", warn: "var(--warn)", n: "var(--neutral)" };
+  an.edges.forEach(([u, v]) => { if (!pos[u] || !pos[v]) return;
+    const ob = an.obligations.find((o) => o.id.startsWith("input:" + v + ":") && o.witness.producer === u); const c = colour[ob ? V[ob.verdict] : "n"];
+    svg.append(mk("line", { x1: pos[u].x + W, y1: pos[u].y + H / 2, x2: pos[v].x, y2: pos[v].y + H / 2, stroke: c, "stroke-width": 2.5 })); });
+  r.activities.forEach((a) => { const p = pos[a.id]; if (!p) return; const g = mk("g", { opacity: a.in_scope ? 1 : 0.4 });
+    g.append(mk("rect", { x: p.x, y: p.y, width: W, height: H, rx: 6, fill: "var(--card)", stroke: "var(--line)", "stroke-width": 1.5 }));
+    const t = mk("text", { x: p.x + 8, y: p.y + 25, fill: "var(--fg)", "font-size": 13 }); t.textContent = a.id + (a.conversion ? "  ⇄ unit conversion" : ""); g.append(t); svg.append(g); });
+  const edgeRows = an.obligations.filter((o) => o.type === "edge");
+  const impactSel = h("select", { id: "c-cmp", "aria-label": "Compare with another version" }, h("option", { value: "", text: "Compare with another version…" }), sources.filter((x) => x.id !== sourceId).map((x) => h("option", { value: x.id, text: x.name })));
+  const impactOut = h("div", {});
+  impactSel.addEventListener("change", async () => { if (!impactSel.value) return put(impactOut);
+    try { const im = await api("POST", "composition/impact", { body: { old: impactSel.value, new: sourceId, subject } });
+      put(impactOut, h("h3", { text: "What a change reaches" }), h("p", { class: "muted", text: im.note }),
+        h("p", {}, `changed: ${im.changed.join(", ") || "none"} · added: ${im.added.join(", ") || "none"} · removed: ${im.removed.join(", ") || "none"} · external changed: ${im.external_changed.join(", ") || "none"}`),
+        h("ul", {}, Object.entries(im.affected).map(([k, path]) => h("li", {}, h("code", { text: k }), " ← ", path.join(" → ")))), h("p", { class: "muted", text: "Unaffected: " + (im.unaffected.join(", ") || "none") }));
+    } catch (e) { put(impactOut, errorBox(e)); } });
+  put(out, h("div", { class: "notice " + V[an.overall], role: "alert" }, h("strong", { text: an.overall.replace(/_/g, " ") }), ` - ${r.source.name}. `, an.scope.statement),
+    h("div", { class: "card" }, h("div", { class: "row" }, h("label", { class: "inline", text: "Scope " }, tsel), impactSel),
+      h("h2", { text: "Pipeline (dependency order)" }), h("div", { style: "overflow:auto" }, svg),
+      h("p", { class: "muted", text: an.order.length ? "Order: " + an.order.join(" → ") : "No valid order exists (see the cycle below)." })),
+    h("div", { class: "card" }, h("h2", { text: "Edges: what each producer guarantees vs what each consumer requires" }),
+      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Edge", "Artifact", "Verdict", "Reason", "Detail"].map((t) => h("th", { text: t })))),
+        h("tbody", {}, edgeRows.length ? edgeRows.map((o) => h("tr", {}, h("td", { class: "mono", text: `${o.witness.producer || "?"} → ${o.witness.consumer || o.id.split(":")[1]}` }), h("td", { class: "mono", text: o.witness.artifact || o.id.split(":")[2] }), h("td", {}, verdictBadge(o.verdict)),
+          h("td", { text: o.reason.replace(/_/g, " ") }), h("td", { class: "mono", text: o.witness.mismatches ? o.witness.mismatches.map((m) => `${m.tag}: gives ${JSON.stringify(m.guarantee)}, needs ${JSON.stringify(m.requirement)}`).join("; ") : o.witness.not_established ? "not established: " + o.witness.not_established.map((m) => m.tag).join(", ") : o.witness.source === "external" ? "external input (assumed)" : "" })))
+          : h("tr", {}, h("td", { colSpan: 5, class: "muted", text: "No consumed inputs in scope." })))))),
+    h("div", { class: "card" }, h("h2", { text: "Every obligation" }), compositionObligations(an), impactOut));
 }
 
 /* ---------------------------------------------------------------- campaign */
@@ -750,6 +825,7 @@ async function render(soft) {
       case "export": await viewExport(); break;
       case "advanced": await viewAdvanced(); break;
       case "campaign": await viewCampaign(); break;
+      case "composition": await viewComposition(dec(route[1])); break;
       default: location.hash = "#/import";
     }
   } catch (e) { put(main, errorBox(e)); }

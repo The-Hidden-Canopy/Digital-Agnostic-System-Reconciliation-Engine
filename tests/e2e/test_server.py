@@ -227,3 +227,26 @@ class NoCommandsOverHttp(ServerCase):
             for ep in ("checkpoint", "minimize", "crash", "campaign"):
                 s, err, _ = self.call("POST", f"/api/v1/experiments/{ep}", {key: ["python3", "-c", "print(1)"], "defects": ["reset_next_id"]})
                 self.assertEqual((s, err["error"]["code"]), (422, "commands_not_accepted_over_http"), (key, ep))
+
+
+class CompositionApi(ServerCase):
+    def test_analysis_and_impact_endpoints(self):
+        fx = Path(__file__).resolve().parents[2] / "fixtures" / "composition"
+        ids = {}
+        for name in ("units-mismatch", "units-converted"):
+            s, res, _ = self.call("POST", "/api/v1/sources", (fx / f"{name}.json").read_bytes(), headers={"X-Filename": f"{name}.json"})
+            self.assertEqual(self.wait(res["job_id"])["state"], "SUCCEEDED")
+            ids[name] = res["source"]["id"]
+        s, a, _ = self.call("GET", "/api/v1/composition/" + quote(ids["units-mismatch"]))
+        self.assertEqual((s, a["analysis"]["overall"]), (200, "CONTRADICTED"))
+        s, a, _ = self.call("GET", "/api/v1/composition/" + quote(ids["units-converted"]))
+        self.assertEqual(a["analysis"]["overall"], "SUPPORTED")
+        s, a, _ = self.call("GET", "/api/v1/composition/" + quote(ids["units-converted"]) + "?target=alert")
+        self.assertEqual(a["analysis"]["scope"]["target"], "alert")
+        self.assertEqual(self.call("GET", "/api/v1/composition/" + quote(ids["units-converted"]) + "?target=ghost")[0], 422)
+        self.assertEqual(self.call("GET", "/api/v1/composition/" + quote(ids["units-converted"]) + "?subject=ghost")[0], 422)
+        self.assertEqual(self.call("GET", "/api/v1/composition/nope")[0], 404)
+        s, im, _ = self.call("POST", "/api/v1/composition/impact", {"old": ids["units-mismatch"], "new": ids["units-converted"]})
+        self.assertEqual(s, 200)
+        self.assertIn("to_seconds", im["added"])
+        self.assertIn("alert", im["affected"])

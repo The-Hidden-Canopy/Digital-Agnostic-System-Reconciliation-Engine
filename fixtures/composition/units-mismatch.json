@@ -1,0 +1,37 @@
+{
+ "pipeline": {
+  "external": [],
+  "activities": [
+   {
+    "id": "measure",
+    "produces": [
+     {
+      "artifact": "latency",
+      "tags": {
+       "unit": "milliseconds"
+      },
+      "generation": "g1"
+     }
+    ]
+   },
+   {
+    "id": "alert",
+    "consumes": [
+     {
+      "artifact": "latency",
+      "requires": {
+       "unit": "seconds"
+      }
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "alerts",
+      "tags": {},
+      "generation": "g1"
+     }
+    ]
+   }
+  ]
+ }
+}

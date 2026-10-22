@@ -179,6 +179,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"items": svc.list_packs(), "skipped": svc.packs.skipped})
             if parts == ["purposes"]:
                 return self._json(200, {"items": svc.list_purposes()})
+            if len(parts) == 2 and parts[0] == "composition":
+                return self._json(200, svc.composition_analyze(parts[1], qs.get("subject", "pipeline"), qs.get("target")))
             if parts == ["claims"]:
                 return self._json(200, {"items": svc.list_claims()})
             if parts == ["reconciliation"]:
@@ -228,6 +230,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, svc.experiment_crash(body.get("writer_defect"), body.get("recovery_defects"), body.get("max_positions")))
                 if parts[1] == "minimize":
                     return self._json(200, svc.experiment_minimize(body.get("seed", "seed-1"), body.get("ops", 120), body.get("boundary"), body.get("defects"), body.get("max_oracle_calls", 3000)))
+            if parts == ["composition", "impact"]:
+                body = self._json_body()
+                return self._json(200, svc.composition_impact(body.get("old", ""), body.get("new", ""), body.get("subject", "pipeline")))
             if parts == ["purposes"]:
                 self._json_body()
                 return self._json(201, svc.install_purpose(self._raw))

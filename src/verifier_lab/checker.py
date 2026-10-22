@@ -19,6 +19,7 @@ KNOWN_RULES = {("rule.fact_equals", "1"): "fact.equals",
                ("rule.fact_numeric_bound", "1"): "fact.numeric_bound",
                ("rule.fact_present", "1"): "fact.present",
                ("rule.interval_relation", "1"): "interval.relation",
+               ("rule.composition_valid", "1"): "composition.valid",
                ("dispatch.unsupported", "1"): None}
 EXTRACTION_MEDIA = "application/vnd.verifier-lab.extraction-record+json"
 PROVENANCE_MEDIA = "application/vnd.verifier-lab.claim-provenance+json"
@@ -659,6 +660,9 @@ def _check_finding(f, claims, arts, acts, records, files, entry, rep):
     if not set(f["evidence_refs"]) <= set(claim["evidence_refs"]):
         raise Reject("finding cites evidence outside its claim")
     predicate = KNOWN_RULES[key]
+    if predicate == "composition.valid":
+        _check_composition_finding(f, claim, arts, records, files, entry)
+        return
     if predicate is None:
         if f["verdict"] != "INSUFFICIENT_EVIDENCE" or f["reason_code"] != "no_registered_rule":
             raise Reject("unexpected dispatch finding")
@@ -694,7 +698,7 @@ def _rederive(claim, predicate, arts, records, files):
         if not (isinstance(ap, dict) and ap.get("decision") == "APPLICABLE"):
             return "INVALID_EVIDENCE", "malformed_claim_arguments", []
     allowed = {"fact.equals": {"expected"}, "fact.numeric_bound": {"op", "bound"}, "fact.present": set(),
-               "interval.relation": {"left", "right", "relation", "coord"}}[predicate]
+               "interval.relation": {"left", "right", "relation", "coord"}, "composition.valid": {"target"}}[predicate]
     if set(args) - allowed - {"applicability"}:
         return "INVALID_EVIDENCE", "malformed_claim_arguments", []
     expected = args.get("expected")
@@ -773,6 +777,238 @@ def _rederive(claim, predicate, arts, records, files):
     if not any(res):
         return "CONTRADICTED", "bound_violated", obs
     return "HUMAN_REVIEW_REQUIRED", ("evidence_conflict" if not all(res) else "evidence_source_unreadable"), obs
+
+
+def _check_composition_finding(f, claim, arts, records, files, entry):
+    """Independent re-derivation of composition.valid from the admitted evidence bytes."""
+    if not set(f["evidence_refs"]) <= set(claim["evidence_refs"]):
+        raise Reject("finding cites evidence outside its claim")
+    verdict, reason, obligations, w = _composition_verdict(claim, arts, records, files)
+    if (verdict, reason) != (f["verdict"], f["reason_code"]):
+        raise Reject(f"re-derived {verdict}/{reason}, finding says {f['verdict']}/{f['reason_code']}")
+    theirs = [(o["id"], o["verdict"], o["reason"]) for o in ((f.get("witness") or {}).get("analysis") or {}).get("obligations", [])]
+    if theirs != obligations:
+        raise Reject("per-obligation findings differ from the re-derived ones")
+    entry["accepted"], entry["detail"] = True, "pipeline obligations re-derived from the admitted evidence bytes"
+
+
+def _composition_verdict(claim, arts, records, files):
+    args = claim["arguments"]
+    if not isinstance(args, dict) or set(args) - {"target", "applicability"} or ("target" in args and not (isinstance(args["target"], str) and args["target"])):
+        return "INVALID_EVIDENCE", "malformed_claim_arguments", [], {}
+    ap = args.get("applicability")
+    if ap is not None:
+        if isinstance(ap, dict) and ap.get("decision") == "NOT_APPLICABLE" and all(isinstance(ap.get(k), str) and ap[k].strip() for k in ("rationale", "scope")):
+            return "NOT_APPLICABLE", "reviewer_applicability_decision", [], {}
+        if not (isinstance(ap, dict) and ap.get("decision") == "APPLICABLE"):
+            return "INVALID_EVIDENCE", "malformed_claim_arguments", [], {}
+    prov = next((r for r in claim["evidence_refs"] if r in arts and arts[r]["media_type"] == PROVENANCE_MEDIA), None)
+    origin = _strict(files[arts[prov]["relative_path"]]).get("origin_source_artifact_id") if prov else None
+    srcs = [r for r in claim["evidence_refs"] if r in arts and arts[r]["media_type"] != PROVENANCE_MEDIA and r != origin]
+    if not srcs:
+        return "INSUFFICIENT_EVIDENCE", "no_independent_evidence", [], {}
+    found, bad = [], 0
+    for r in srcs:
+        rec = records.get(r)
+        if rec is None or rec[0]["coverage"]["summary"] not in ("PARSED", "PARTIALLY_PARSED"):
+            bad += 1
+            continue
+        try:
+            doc = _strict(files[arts[r]["relative_path"]])
+        except Reject:
+            bad += 1
+            continue
+        if isinstance(doc, dict) and claim["subject"] in doc:
+            found.append(doc[claim["subject"]])
+    if not found:
+        return ("INVALID_EVIDENCE", "evidence_unreadable", [], {}) if bad == len(srcs) else ("INSUFFICIENT_EVIDENCE", "fact_not_found", [], {})
+    if len({_canon(d) for d in found}) > 1:
+        return "HUMAN_REVIEW_REQUIRED", "evidence_conflict", [], {}
+    try:
+        obs, overall = _pipeline_obligations(found[0], args.get("target"))
+    except ValueError as exc:
+        return "INVALID_EVIDENCE", "malformed_pipeline", [], {}
+    if overall == "SUPPORTED" and bad:
+        return "HUMAN_REVIEW_REQUIRED", "evidence_source_unreadable", obs, {}
+    return overall, {"SUPPORTED": "composition_valid", "CONTRADICTED": "composition_violated",
+                     "INSUFFICIENT_EVIDENCE": "composition_unresolved", "INVALID_EVIDENCE": "composition_invalid"}[overall], obs, {}
+
+
+_CONV = {("seconds", "milliseconds"): "1000", ("milliseconds", "seconds"): "0.001", ("minutes", "seconds"): "60",
+         ("milliseconds", "microseconds"): "1000", ("microseconds", "milliseconds"): "0.001"}
+
+
+def _norm_req(v):
+    if isinstance(v, str) or (isinstance(v, int) and not isinstance(v, bool)):
+        return ("eq", v)
+    if isinstance(v, dict) and set(v) == {"equals"} and isinstance(v["equals"], str) and v["equals"]:
+        return ("eq", v["equals"])
+    if isinstance(v, dict) and set(v) == {"in"} and isinstance(v["in"], list) and v["in"] and all(isinstance(x, str) and x for x in v["in"]):
+        return ("in", tuple(v["in"]))
+    raise ValueError("bad requirement")
+
+
+def _ok_req(r, value):
+    return value == r[1] if r[0] == "eq" else value in r[1]
+
+
+def _pipeline_obligations(doc, target):
+    """Own implementation: validate, build the graph with plain dict/set operations and evaluate each obligation."""
+    if not isinstance(doc, dict) or set(doc) - {"external", "activities", "same_generation"}:
+        raise ValueError("shape")
+    acts = doc.get("activities")
+    if not isinstance(acts, list) or not acts:
+        raise ValueError("activities")
+    ext = {}
+    for e in doc.get("external", []):
+        if not isinstance(e, dict) or set(e) - {"artifact", "tags", "generation", "assumption"} or not (isinstance(e.get("artifact"), str) and e["artifact"]):
+            raise ValueError("external")
+        ext[e["artifact"]] = e
+    A = {}
+    for a in acts:
+        if not isinstance(a, dict) or set(a) - {"id", "consumes", "produces", "depends_on", "conversion"} or not (isinstance(a.get("id"), str) and a["id"]) or a["id"] in A:
+            raise ValueError("activity")
+        for c in a.get("consumes", []):
+            if not isinstance(c, dict) or set(c) - {"artifact", "requires"} or not (isinstance(c.get("artifact"), str) and c["artifact"]):
+                raise ValueError("consumes")
+            c["_req"] = {k: _norm_req(v) for k, v in (c.get("requires") or {}).items()}
+        for pr in a.get("produces", []):
+            if not isinstance(pr, dict) or set(pr) - {"artifact", "tags", "generation"} or not (isinstance(pr.get("artifact"), str) and pr["artifact"]):
+                raise ValueError("produces")
+        dep = a.get("depends_on", [])
+        if not isinstance(dep, list) or not all(isinstance(d, str) and d for d in dep) or len(dep) != len(set(dep)):
+            raise ValueError("depends_on")
+        cv = a.get("conversion")
+        if cv is not None and (not isinstance(cv, dict) or set(cv) != {"from", "to", "factor"} or not all(isinstance(cv[k], str) and cv[k] for k in cv)):
+            raise ValueError("conversion")
+        A[a["id"]] = a
+    sg = doc.get("same_generation", [])
+    if not isinstance(sg, list) or not all(isinstance(g, list) and len(g) >= 2 and all(isinstance(x, str) and x for x in g) for g in sg):
+        raise ValueError("same_generation")
+    if target is not None and target not in A:
+        raise ValueError("target")
+    produced = {}
+    for aid, a in A.items():
+        for pr in a.get("produces", []):
+            produced.setdefault(pr["artifact"], []).append(aid)
+    edges = set()
+    for aid, a in A.items():
+        for d in a.get("depends_on", []):
+            if d in A and d != aid:
+                edges.add((d, aid))
+        for c in a.get("consumes", []):
+            for s in produced.get(c["artifact"], []):
+                if s != aid:
+                    edges.add((s, aid))
+    scope = set(A)
+    if target:
+        scope, todo = {target}, [target]
+        while todo:
+            n = todo.pop()
+            for (u, v) in edges:
+                if v == n and u not in scope:
+                    scope.add(u)
+                    todo.append(u)
+    out = []
+    first_problem = None
+    for art in sorted(produced):
+        if len(produced[art]) > 1 and any(w in scope for w in produced[art]):
+            first_problem = first_problem or "producer_collision"
+        if art in ext:
+            first_problem = first_problem or "internal_and_external"
+    if first_problem:
+        out.append(("graph:declarations", "INVALID_EVIDENCE", first_problem))
+    if any(aid in scope and aid in A[aid].get("depends_on", []) for aid in A):
+        out.append(("graph:self_dependency", "INVALID_EVIDENCE", "self_dependency"))
+    missing = any(d not in A for aid in scope for d in A[aid].get("depends_on", []))
+    out.append(("graph:references", "INSUFFICIENT_EVIDENCE", "prerequisite_not_declared") if missing else ("graph:references", "SUPPORTED", "prerequisites_declared"))
+    # acyclic: repeatedly strip nodes with no unprocessed predecessor (Kahn without a heap); leftovers contain a cycle
+    sub = {(u, v) for (u, v) in edges if u in scope and v in scope}
+    left = set(scope)
+    progress = True
+    while progress:
+        progress = False
+        for n in sorted(left):
+            if not any(v == n and u in left for (u, v) in sub):
+                left.discard(n)
+                progress = True
+    # a leftover node lies on a cycle iff it can reach itself
+    def reaches_self(n):
+        seen, st = set(), [m for (u, m) in sub if u == n and m in left]
+        while st:
+            x = st.pop()
+            if x == n:
+                return True
+            if x not in seen:
+                seen.add(x)
+                st += [m for (u, m) in sub if u == x and m in left]
+        return False
+    cyc = any(reaches_self(n) for n in left)
+    out.append(("graph:acyclic", "CONTRADICTED", "cycle") if cyc else ("graph:acyclic", "SUPPORTED", "acyclic"))
+    for aid in sorted(scope):
+        cv = A[aid].get("conversion")
+        if not cv:
+            continue
+        oid = f"conversion:{aid}"
+        try:
+            fac = Decimal(cv["factor"])
+            finite = fac.is_finite()
+        except InvalidOperation:
+            finite = False
+        known = _CONV.get((cv["from"], cv["to"]))
+        ins = [c["_req"].get("unit") for c in A[aid].get("consumes", [])]
+        outs = [(pr.get("tags") or {}).get("unit") for pr in A[aid].get("produces", [])]
+        if not finite:
+            out.append((oid, "INVALID_EVIDENCE", "factor_not_decimal"))
+        elif known is None:
+            out.append((oid, "INSUFFICIENT_EVIDENCE", "conversion_not_verifiable"))
+        elif fac != Decimal(known):
+            out.append((oid, "CONTRADICTED", "conversion_factor_wrong"))
+        elif not any(u is not None and _ok_req(u, cv["from"]) for u in ins) or cv["to"] not in outs:
+            out.append((oid, "CONTRADICTED", "conversion_tags_inconsistent"))
+        else:
+            out.append((oid, "SUPPORTED", "conversion_verified"))
+    for aid in sorted(scope):
+        for c in sorted(A[aid].get("consumes", []), key=lambda x: x["artifact"]):
+            oid = f"input:{aid}:{c['artifact']}"
+            who = produced.get(c["artifact"], [])
+            if len(who) > 1:
+                continue
+            if who:
+                tags = next(pr for pr in A[who[0]]["produces"] if pr["artifact"] == c["artifact"]).get("tags") or {}
+            elif c["artifact"] in ext:
+                if not ext[c["artifact"]].get("assumption"):
+                    out.append((oid, "INSUFFICIENT_EVIDENCE", "external_without_assumption"))
+                    continue
+                tags = ext[c["artifact"]].get("tags") or {}
+            else:
+                out.append((oid, "INSUFFICIENT_EVIDENCE", "undeclared_input"))
+                continue
+            wrong = [t for t, r in c["_req"].items() if t in tags and not _ok_req(r, tags[t])]
+            unknown = [t for t in c["_req"] if t not in tags]
+            out.append((oid, "CONTRADICTED", "tag_mismatch") if wrong else (oid, "INSUFFICIENT_EVIDENCE", "tag_not_established") if unknown
+                       else (oid, "SUPPORTED", "requirements_met"))
+    for i, grp in enumerate(sg):
+        if not all(x in produced or x in ext for x in grp):
+            out.append((f"generation:{i}", "INSUFFICIENT_EVIDENCE", "artifact_not_declared"))
+            continue
+        if not any((produced.get(x) or [None])[0] in scope or x in ext for x in grp):
+            continue
+        gens = {}
+        for x in grp:
+            if x in produced and len(produced[x]) == 1:
+                gens[x] = next(pr for pr in A[produced[x][0]]["produces"] if pr["artifact"] == x).get("generation")
+            elif x in ext:
+                gens[x] = ext[x].get("generation")
+        if len(gens) < len(grp) or any(v is None for v in gens.values()):
+            out.append((f"generation:{i}", "INSUFFICIENT_EVIDENCE", "generation_unstated"))
+        elif len(set(gens.values())) > 1:
+            out.append((f"generation:{i}", "CONTRADICTED", "generations_differ"))
+        else:
+            out.append((f"generation:{i}", "SUPPORTED", "generations_equal"))
+    vs = [v for _, v, _ in out]
+    return out, ("CONTRADICTED" if "CONTRADICTED" in vs else "INVALID_EVIDENCE" if "INVALID_EVIDENCE" in vs
+                 else "INSUFFICIENT_EVIDENCE" if "INSUFFICIENT_EVIDENCE" in vs else "SUPPORTED")
 
 
 _IV_SUFFIXES = ("start", "end", "start_min", "start_max", "end_min", "end_max")

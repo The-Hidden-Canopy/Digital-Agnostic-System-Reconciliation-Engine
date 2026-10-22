@@ -91,6 +91,19 @@ Scope: two example profiles about a fictional checkpoint (`inspect-checkpoint`, 
 lifecycle history is read from `<history>[i].stage|seq|clock` facts. Not built: richer coherence rules, user-authored profile editing in the UI,
 and applicability conditions on profiles (a profile that is `NOT_APPLICABLE` to a claim).
 
+## Added in increment seven (chapter 03, composition obligations)
+
+| Area | Implemented | Evidence |
+|---|---|---|
+| Composition analysis | `composition.py`: pipeline descriptions (data only, strict shape, bounded) with a deliberately tiny vocabulary - exact tag equality, finite membership, generation equality, explicit prerequisites, declared unit conversions verified only against an exact registered table (no conversion is inferred from familiar unit names). Ordering (stable Kahn, real cycle witness) is kept separate from closure (undeclared inputs, external inputs without an assumption). Every obligation keeps its own verdict; support needs all of them; assumptions (declared externals, unverified producer tags) stay visible; targeted claims evaluate only a target's ancestors and say the rest is unresolved, not verified | `tests/unit/test_composition.py`, `fixtures/composition/` |
+| Invalidation | `impact(old, new)`: changed/added/removed activities and external inputs, each affected activity with a witness path; unaffected branches listed | same |
+| Rule and checker | `composition.valid` rule; the independent checker re-derives every obligation with its own implementation (plain dict/set code, a different cycle test); a 500-pipeline randomized differential test found the two agree; laundered or hidden obligations are rejected | same; `tests/e2e/test_composition_workflow.py` |
+| UI | Composition page (source, scope, SVG layered diagram *plus* an equivalent edge table, obligations, version comparison), composition option in the review form, obligations in the finding detail | browser journey |
+
+Limits: the registered conversion table has five pairs; requirements are equality/membership only (no ranges or arithmetic); a pipeline is read
+from one evidence document (conflicting copies go to human review); producer tags are assertions, so a SUPPORTED result says so in `conditional_on`.
+The cache-key scheme for incremental re-evaluation (claim + transitive evidence + rule versions) is not implemented; impact analysis is.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -105,7 +118,7 @@ and applicability conditions on profiles (a profile that is `NOT_APPLICABLE` to 
 
 ## Not built yet (explicitly out of this increment)
 
-Composition obligations (03), mutation/metamorphic campaigns and campaign reports (09, most of 10),
+ mutation/metamorphic campaigns and campaign reports (09, most of 10),
 adapters that point *campaigns* at an external verifier; the EU/US/China/Australia packs (14, 15) — **no jurisdiction content exists
 here**; OCR; signatures and trust anchors; model-assisted suggestions; manual creation of claims from free prose;
 manual claim editing beyond the three predicates; dependency-graph and temporal-replay views; multi-project support.

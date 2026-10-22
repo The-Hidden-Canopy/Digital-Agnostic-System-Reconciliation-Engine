@@ -1,0 +1,23 @@
+{
+ "pipeline": {
+  "external": [],
+  "activities": [
+   {
+    "id": "report",
+    "consumes": [
+     {
+      "artifact": "figures",
+      "requires": {}
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "pdf",
+      "tags": {},
+      "generation": "g1"
+     }
+    ]
+   }
+  ]
+ }
+}

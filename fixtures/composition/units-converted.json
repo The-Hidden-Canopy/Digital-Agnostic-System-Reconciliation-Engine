@@ -1,0 +1,62 @@
+{
+ "pipeline": {
+  "external": [],
+  "activities": [
+   {
+    "id": "measure",
+    "produces": [
+     {
+      "artifact": "latency",
+      "tags": {
+       "unit": "milliseconds"
+      },
+      "generation": "g1"
+     }
+    ]
+   },
+   {
+    "id": "to_seconds",
+    "consumes": [
+     {
+      "artifact": "latency",
+      "requires": {
+       "unit": "milliseconds"
+      }
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "latency_s",
+      "tags": {
+       "unit": "seconds"
+      },
+      "generation": "g1"
+     }
+    ],
+    "conversion": {
+     "from": "milliseconds",
+     "to": "seconds",
+     "factor": "0.001"
+    }
+   },
+   {
+    "id": "alert",
+    "consumes": [
+     {
+      "artifact": "latency_s",
+      "requires": {
+       "unit": "seconds"
+      }
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "alerts",
+      "tags": {},
+      "generation": "g1"
+     }
+    ]
+   }
+  ]
+ }
+}

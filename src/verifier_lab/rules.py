@@ -373,6 +373,59 @@ class IntervalRelation(BaseRule):
         return _finding(claim, Verdict.CONTRADICTED, self, "relation_violated", g, w)
 
 
+class CompositionValid(BaseRule):
+    """The composed pipeline described in an evidence document satisfies its declared obligations (chapter 03)."""
+    rule_id, predicate = "rule.composition_valid", "composition.valid"
+    REASONS = {"SUPPORTED": "composition_valid", "CONTRADICTED": "composition_violated",
+               "INSUFFICIENT_EVIDENCE": "composition_unresolved", "INVALID_EVIDENCE": "composition_invalid"}
+
+    def validate_args(self, args):
+        if set(args) - {"target", "applicability"} or ("target" in args and not (isinstance(args["target"], str) and args["target"])):
+            return "arguments may only name an optional target activity"
+        return None
+
+    def evaluate(self, ctx, claim):
+        from . import composition as CP
+        from .canonical import strict_loads as _loads
+        ap = self._applicability(claim)
+        if ap is False:
+            return self.invalid(claim, "applicability must be {decision, rationale, scope}")
+        if isinstance(ap, Finding):
+            return ap
+        if not isinstance(claim.arguments, dict) or self.validate_args(claim.arguments):
+            return self.invalid(claim, self.validate_args(claim.arguments) if isinstance(claim.arguments, dict) else "arguments must be an object")
+        g = _gather(ctx, claim, ())
+        if not g.sources:
+            return _finding(claim, Verdict.INSUFFICIENT_EVIDENCE, self, "no_independent_evidence", g, {"excluded_assertion_source": g.excluded_origin})
+        found, unreadable = [], list(g.unusable)
+        for ref, rec, _ in g.sources:
+            if rec is None or rec["coverage"]["summary"] not in USABLE:
+                continue
+            try:
+                doc = _loads(ctx.artifact_bytes(ref), max_bytes=8_000_000, max_depth=24)
+            except Exception:
+                unreadable.append({"artifact_id": ref, "coverage": "UNPARSEABLE"})
+                continue
+            if isinstance(doc, dict) and claim.subject in doc:
+                found.append((ref, doc[claim.subject]))
+        w: dict = {"unusable_sources": unreadable}
+        if not found:
+            only_bad = unreadable and len(unreadable) == len(g.sources) and all(u["coverage"] in ("CORRUPT", "UNPARSEABLE") for u in unreadable)
+            return _finding(claim, Verdict.INVALID_EVIDENCE if only_bad else Verdict.INSUFFICIENT_EVIDENCE, self,
+                            "evidence_unreadable" if only_bad else "fact_not_found", g, {**w, "searched": [s[0] for s in g.sources]})
+        if len({canonical_bytes(d) for _, d in found}) > 1:
+            return _finding(claim, Verdict.HUMAN_REVIEW_REQUIRED, self, "evidence_conflict", g, {**w, "sources": [r for r, _ in found]})
+        ref, doc = found[0]
+        try:
+            analysis = CP.analyze(CP.parse_pipeline(doc), claim.arguments.get("target"))
+        except CP.PipelineError as exc:
+            return _finding(claim, Verdict.INVALID_EVIDENCE, self, "malformed_pipeline", g, {**w, "pipeline_source": ref, "detail": str(exc)[:300]})
+        overall = analysis["overall"]
+        if overall == "SUPPORTED" and unreadable:
+            return _finding(claim, Verdict.HUMAN_REVIEW_REQUIRED, self, "evidence_source_unreadable", g, {**w, "pipeline_source": ref, "analysis": analysis})
+        return _finding(claim, Verdict(overall), self, self.REASONS[overall], g, {**w, "pipeline_source": ref, "analysis": analysis})
+
+
 class RuleRegistry:
     def __init__(self):
         self._rules: dict[tuple[str, str], BaseRule] = {}
@@ -402,7 +455,7 @@ class RuleRegistry:
 
 def builtin_registry() -> RuleRegistry:
     reg = RuleRegistry()
-    for rule in (FactEquals(), FactNumericBound(), FactPresent(), IntervalRelation()):
+    for rule in (FactEquals(), FactNumericBound(), FactPresent(), IntervalRelation(), CompositionValid()):
         reg.register(rule)
     return reg
 

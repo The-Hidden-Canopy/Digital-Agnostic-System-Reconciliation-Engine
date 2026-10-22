@@ -1,0 +1,74 @@
+{
+ "pipeline": {
+  "external": [
+   {
+    "artifact": "raw",
+    "tags": {
+     "unit": "seconds"
+    },
+    "generation": "g1",
+    "assumption": "supplied by the operator; not verified here"
+   }
+  ],
+  "activities": [
+   {
+    "id": "normalize",
+    "consumes": [
+     {
+      "artifact": "raw",
+      "requires": {
+       "unit": "seconds"
+      }
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "text",
+      "tags": {
+       "unit": "seconds",
+       "offsets": "normalized"
+      },
+      "generation": "g1"
+     }
+    ]
+   },
+   {
+    "id": "report",
+    "consumes": [
+     {
+      "artifact": "text",
+      "requires": {
+       "unit": "seconds"
+      }
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "pdf",
+      "tags": {},
+      "generation": "g1"
+     }
+    ],
+    "depends_on": [
+     "normalize"
+    ]
+   },
+   {
+    "id": "side",
+    "consumes": [
+     {
+      "artifact": "nothing_produces_this",
+      "requires": {}
+     }
+    ],
+    "produces": [
+     {
+      "artifact": "junk",
+      "tags": {},
+      "generation": "g1"
+     }
+    ]
+   }
+  ]
+ }
+}
