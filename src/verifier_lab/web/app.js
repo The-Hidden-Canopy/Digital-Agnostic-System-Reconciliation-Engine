@@ -101,7 +101,7 @@ async function refreshOverview() {
 }
 
 /* ------------------------------------------------------------------ import */
-async function viewImport(id) {
+async function viewImport(id, soft = false) {
   const live = begin();
   setNav("import");
   const caps = (await api("GET", "capabilities"));
@@ -155,6 +155,9 @@ async function viewImport(id) {
         h("td", {}, h("a", { href: "#/review?source=" + enc(s.id), text: "Review claims" })));
     }) : h("tr", {}, h("td", { colSpan: 6, class: "muted", text: "Nothing imported yet. Choose a file above to begin." })))));
   if (!live()) return;
+  // A background refresh may have started before the user selected files or began a form.
+  // Recheck after the asynchronous requests so that refresh cannot erase their input.
+  if (soft && (($('#files') && $('#files').files.length) || document.activeElement.closest('form'))) return;
   put(main, h("h1", { text: "Import sources" }),
     h("div", { class: "card" }, form), h("div", { class: "card" }, h("h2", { text: "Sources" }), table),
     id ? h("div", { id: "detail" }) : null);
@@ -191,9 +194,53 @@ async function sourceDetail(id) {
       (s.blocked_keys || []).length ? h("div", { class: "notice warn" }, h("strong", { text: "Withheld keys (duplicate definitions are never resolved silently): " }), s.blocked_keys.map((b) => b.key).join(", ")) : null,
       h("h3", { text: "Text rendition (inert - never rendered as markup)" }),
       t.truncated ? h("p", { class: "muted", text: "Showing the first part only." }) : null,
-      h("pre", { class: "src", tabIndex: 0, "aria-label": "Source text", text: t.text || t.note })));
+      h("pre", { class: "src", tabIndex: 0, "aria-label": "Source text", text: t.text || t.note }),
+      s.attempt && s.attempt.state === "EXTRACTED" && !s.superseded_by && t.text ? authorForm(s, t.text) : null));
     $("#src-h").focus();
   } catch (e) { put(box, errorBox(e)); }
+}
+
+function authorForm(source, text) {
+  const passage = h("textarea", { id: "a-source", readOnly: true, rows: 8, value: text });
+  const selected = h("blockquote", { id: "a-selected", text: "Select a passage above, then use it below." });
+  let span = null;
+  const subject = h("input", { id: "a-subject", required: true, maxLength: 500 });
+  const kind = h("select", { id: "a-kind" }, ["string", "integer", "decimal", "boolean", "null"].map((k) => h("option", { value: k, text: k })));
+  const value = h("input", { id: "a-value" });
+  const reason = h("textarea", { id: "a-reason", required: true, maxLength: 4000 });
+  const status = h("div", { role: "status" });
+  const submit = h("button", { type: "submit", text: "Create candidate for review", disabled: true });
+  const useSelection = h("button", { type: "button", text: "Use selected passage", onclick: () => {
+    const start = passage.selectionStart, end = passage.selectionEnd;
+    const bytes = new TextEncoder();
+    const snippet = text.slice(start, end);
+    if (!snippet.trim() || bytes.encode(snippet).length > 16000) {
+      span = null; submit.disabled = true; put(status, errorBox(new Error("Select a nonempty passage of at most 16000 bytes."))); return;
+    }
+    span = { byte_start: bytes.encode(text.slice(0, start)).length, byte_end: bytes.encode(text.slice(0, end)).length };
+    selected.textContent = snippet; submit.disabled = false; put(status, );
+  } });
+  const form = h("form", { onsubmit: async (e) => {
+    e.preventDefault(); if (!span) return; submit.disabled = true;
+    try {
+      let v = value.value;
+      if (kind.value === "boolean") {
+        if (!["true", "false"].includes(v.trim())) throw new Error("Boolean values must be true or false.");
+        v = v.trim() === "true";
+      } else if (kind.value === "null") v = null;
+      const result = await api("POST", "candidates", { body: { source_id: source.id, attempt_id: source.attempt.id, ...span,
+        interpretation: { predicate: "fact.equals", subject: subject.value, arguments: { expected: { kind: kind.value, value: v } } },
+        reason: reason.value }, headers: { "Idempotency-Key": crypto.randomUUID() } });
+      state.filters = { source: "", status: "PENDING", q: "" };
+      location.hash = "#/review/" + enc(result.id); announce("Human interpretation created. Review and approval are still required.");
+    } catch (err) { put(status, errorBox(err)); submit.disabled = false; }
+  } }, h("label", { for: "a-source", text: "Select the source passage (read only)" }), passage, useSelection, selected,
+    h("label", { for: "a-subject", text: "Fact key to check in the evidence" }), subject,
+    h("label", { for: "a-kind", text: "Expected value type" }), kind,
+    h("label", { for: "a-value", text: "Expected value" }), value,
+    h("label", { for: "a-reason", text: "Why does this passage express the claim?" }), reason, submit, status);
+  return h("details", { class: "card" }, h("summary", { text: "Create a claim from this text" }),
+    h("p", { class: "notice", text: "Your interpretation stays separate from extracted facts. Approval records what to test; the application does not prove that the passage entails your interpretation." }), form);
 }
 
 /* ------------------------------------------------------------------ review */
@@ -232,7 +279,7 @@ async function viewReview(selected, params) {
   const right = h("div", { id: "cand", class: "card" }, h("p", { class: "muted", text: list.items.length ? "Select a candidate to see its exact source evidence." : "No candidates match. Import a source or change the filters." }));
   if (!live()) return;
   put(main, h("h1", { text: "Review claims" }),
-    h("div", { class: "notice", text: "A candidate is an unreviewed machine suggestion. Approving records what to test - it does not mean the statement is true. Editing changes the interpretation, never the source." }),
+    h("div", { class: "notice", text: "A candidate is an unreviewed suggestion or human interpretation. Approving records what to test - it does not mean the statement is true. Editing changes the interpretation, never the source." }),
     h("div", { class: "grid2" }, left, right));
   renderBulk();
   if (selected && live()) await candidateDetail(selected);
@@ -263,7 +310,11 @@ async function candidateDetail(id) {
     const form = decisionForm(c);
     put(box, 
       h("h2", { id: "cand-h", tabIndex: -1, text: c.fact_key }),
-      h("p", {}, "Proposed claim: ", h("code", { text: c.predicate.predicate }), " - ", h("code", { text: c.fact_key }), " equals ", h("code", { text: fmtVal(exp) }), ` (${exp.kind})`, " ", badge(c.status, c.status === "APPROVED" ? "b-ok" : "b-neutral")),
+      h("p", {}, "Proposed claim: ", h("code", { text: c.predicate.predicate }), " - ", h("code", { text: c.fact_key }),
+        exp ? [" equals ", h("code", { text: fmtVal(exp) }), ` (${exp.kind})`] : h("code", { text: JSON.stringify(c.predicate.arguments) }),
+        " ", badge(c.status, c.status === "APPROVED" ? "b-ok" : "b-neutral")),
+      c.authored ? h("div", { class: "notice warn" }, h("strong", { text: "Human interpretation. " }),
+        c.author_reason, " Semantic entailment from this passage is not machine-verified.") : null,
       !c.current ? h("div", { class: "notice warn", text: "This candidate belongs to a superseded extraction and can no longer be decided." }) : null,
       (c.qualifiers || []).length ? h("div", { class: "notice warn" }, h("strong", { text: "Unresolved qualifiers: " }), c.qualifiers.join(", ")) : null,
       h("h3", { text: "Source evidence" }),
@@ -279,7 +330,7 @@ async function candidateDetail(id) {
 }
 
 function decisionForm(c) {
-  const exp = c.predicate.arguments.expected;
+  const exp = c.predicate.arguments.expected || { kind: "string", value: "" };
   const status = h("div", { role: "status" });
   const action = h("select", { id: "d-action" }, [["APPROVE", "Approve as proposed"], ["APPROVE_WITH_EDIT", "Edit and approve"], ["REJECT", "Reject"], ["DEFER", "Defer"]].map(([v, t]) => h("option", { value: v, text: t })));
   const pred = h("select", { id: "e-pred" }, [["fact.equals", "equals a value"], ["fact.numeric_bound", "numeric bound"], ["fact.present", "is present"], ["interval.relation", "interval relation between two activities"], ["composition.valid", "a pipeline description composes (tags, generations, units)"]].map(([v, t]) => h("option", { value: v, text: t })));
@@ -818,7 +869,7 @@ async function render(soft) {
   const dec = (s) => (s ? decodeURIComponent(s) : undefined);
   try {
     switch (route[0] || "import") {
-      case "import": await viewImport(dec(route[1])); break;
+      case "import": await viewImport(dec(route[1]), soft); break;
       case "review": await viewReview(dec(route[1]), params); break;
       case "run": await viewRun(dec(route[1])); break;
       case "findings": await viewFindings(dec(route[1]), dec(route[2])); break;

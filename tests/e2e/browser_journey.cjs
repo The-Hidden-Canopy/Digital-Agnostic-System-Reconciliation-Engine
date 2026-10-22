@@ -209,6 +209,47 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.waitForSelector('.notice.ok, .notice.bad');
   assert.strictEqual(await page.textContent('.notice.ok strong'), 'VERIFIED');
 
+  // 5b. A human can propose a claim from prose; source selection stays distinct from evidence.
+  const authoredText = 'Résumé: the maximum allowed quantity is one hundred.\n';
+  await page.goto(BASE + '#/import');
+  await page.setInputFiles('#files', [
+    { name: 'reviewer-note.md', mimeType: 'text/markdown', buffer: Buffer.from(authoredText) },
+    { name: 'reviewer-evidence.json', mimeType: 'application/json', buffer: Buffer.from('{"author":{"limit":200}}') }
+  ]);
+  await page.click('button[type=submit]');
+  await page.waitForFunction(() => !/QUEUED|PARSING/.test(document.querySelector('main').innerText) && /reviewer-note\.md/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
+  await page.locator('a', { hasText: 'reviewer-note.md' }).click();
+  await page.locator('summary', { hasText: 'Create a claim from this text' }).click();
+  await page.locator('#a-source').evaluate((el) => { el.focus(); el.setSelectionRange(8, el.value.length - 1); });
+  await page.click('button:has-text("Use selected passage")');
+  assert.ok((await page.textContent('#a-selected')).startsWith('the maximum'));
+  await page.fill('#a-subject', 'author.limit');
+  await page.selectOption('#a-kind', 'integer');
+  await page.fill('#a-value', '100');
+  await page.fill('#a-reason', 'Interpret the written quantity as an exact maximum.');
+  await page.click('button:has-text("Create candidate for review")');
+  await page.waitForSelector('#cand-h');
+  assert.strictEqual(await page.textContent('#cand-h'), 'author.limit');
+  assert.ok((await page.innerText('main')).includes('Semantic entailment from this passage is not machine-verified'));
+  assert.ok((await page.textContent('mark')).startsWith('the maximum'));
+  await page.click('button:has-text("Record decision")');
+  await page.waitForFunction(() => ![...document.querySelectorAll('.list li')].some((el) => el.innerText.includes('author.limit') && el.innerText.includes('reviewer-note.md')));
+  await page.goto(BASE + '#/run');
+  await page.waitForSelector('summary:has-text("Risk packs")');
+  while (await checked.count()) await checked.first().uncheck();
+  await page.locator('li', { hasText: 'author.limit fact.equals 100' }).locator('input').check();
+  await page.locator('li', { hasText: 'reviewer-evidence.json' }).locator('input').check();
+  await page.click('button:has-text("Start run")');
+  await page.waitForSelector('text=Open findings', { timeout: 60000 });
+  await page.click('text=Open findings >> nth=0');
+  await page.waitForSelector('table tbody tr');
+  assert.strictEqual(await page.locator('table tbody tr').count(), 1);
+  assert.ok((await page.innerText('table tbody')).includes('Contradicted'));
+  await page.goto(BASE + '#/export');
+  await page.click('button:has-text("Verify with the independent checker")');
+  await page.waitForSelector('.notice.ok, .notice.bad');
+  assert.strictEqual(await page.textContent('.notice.ok strong'), 'VERIFIED');
+
   // 6. keyboard only: first Tab stop is the skip link; Enter moves focus to <main>; Tab order then walks the five steps
   let kp = await browser.newPage();
   kp.on('pageerror', (e) => problems.push('pageerror: ' + e.message));
@@ -244,4 +285,4 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   assert.deepStrictEqual(problems, [], problems.join('\n'));
   console.log('browser journey: OK');
   await browser.close();
-})().catch((e) => { console.error('browser journey FAILED:', e.message); process.exit(1); });
+})().catch((e) => { console.error('browser journey FAILED:', e.stack || e.message); process.exit(1); });

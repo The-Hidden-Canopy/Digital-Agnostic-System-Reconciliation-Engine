@@ -125,6 +125,19 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 * [RELEASE.md](RELEASE.md): commands, dependency inventory and evidence limits. The helper records source-input,
   dependency and artifact hashes and dirty source state; it does not publish or sign anything.
 
+## Added in increment ten (source-linked human interpretation)
+
+* A user can create a pending candidate from selected prose in an immutable source rendition,
+  give an interpretation reason, review it, and run it against separate evidence. The UI has an
+  equality form; service and CLI accept any installed built-in predicate with validated arguments.
+* Selected spans and authoring reasons are separate from extraction records, which stay unchanged.
+  Human candidates remain qualified and cannot receive unqualified bulk approval. Export and the
+  independent checker retain the distinction between source-byte integrity and human interpretation.
+* `source` and `author` CLI commands; `POST /api/v1/candidates`; Unicode-safe UI selection. Tests cover
+  persistence, stale sources, input validation, authorization and provenance forgery.
+* An asynchronous import refresh rechecks file selection before replacing the form, preserving files
+  selected while the refresh's requests were in flight.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -140,7 +153,7 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 ## Not built yet (explicitly out of this increment)
 
 The EU/US/China/Australia packs (14, 15) — **no jurisdiction pack ships here**; OCR; signatures and trust anchors;
-model-assisted suggestions; manual creation of claims from free prose; broader claim predicate editing;
+model-assisted suggestions; broader claim predicate editing;
 temporal-replay and general dependency-graph views; multi-project support; additional synthetic stateful systems.
 Campaigns, replay and reduction are implemented as described above, with their stated scope limits.
 

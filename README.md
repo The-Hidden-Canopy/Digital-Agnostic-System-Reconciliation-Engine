@@ -32,6 +32,10 @@ Try the tutorial files in [`fixtures/tutorial/`](fixtures/tutorial/) (expected v
 and schema, and inspect the findings. `limits.max_upload_kb` is `CONTRADICTED` (100 vs 200) and the evidence
 snippet shows the two exact tokens.
 
+For prose without extracted candidates, open the source and expand **Create a claim from this text**.
+Select a passage, state the expected fact and explain your interpretation, then review the new
+candidate. This records a human interpretation; it does not add an extracted evidence fact.
+
 Same flow headless (the CLI and the UI call one application service):
 
 ```bash

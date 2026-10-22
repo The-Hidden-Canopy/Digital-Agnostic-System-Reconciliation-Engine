@@ -161,6 +161,18 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("candidates", help="list candidate claims")
     s.add_argument("--source")
     s.add_argument("--status")
+    s = sub.add_parser("source", help="inspect a source and its inert text rendition")
+    s.add_argument("source_id")
+    s = sub.add_parser("author", help="propose a source-linked human interpretation (requires separate approval)")
+    s.add_argument("source_id")
+    s.add_argument("--attempt", required=True, help="current extraction attempt from the source command")
+    s.add_argument("--start", required=True, type=int, help="UTF-8 byte offset in the text rendition")
+    s.add_argument("--end", required=True, type=int, help="exclusive UTF-8 byte offset")
+    s.add_argument("--predicate", default="fact.equals")
+    s.add_argument("--subject", required=True)
+    s.add_argument("--arguments", required=True, help="JSON object with the predicate arguments")
+    s.add_argument("--reason", required=True)
+    s.add_argument("--idempotency-key")
     s = sub.add_parser("approve", help="approve candidates as claims")
     s.add_argument("ids", nargs="+")
     s = sub.add_parser("reject", help="reject candidates (reason required)")
@@ -266,6 +278,18 @@ def main(argv: list[str] | None = None) -> int:
             return OK if all((r.get("job") or {"state": "SUCCEEDED"})["state"] == "SUCCEEDED" for r in results) else FAILED
         if args.cmd == "candidates":
             _out(svc.list_candidates(source_id=args.source, status=args.status, limit=500))
+            return OK
+        if args.cmd == "source":
+            _out({"source": svc.get_source(args.source_id, detail=True), "rendition": svc.source_text(args.source_id)})
+            return OK
+        if args.cmd == "author":
+            try:
+                arguments = json.loads(args.arguments)
+            except ValueError:
+                raise ServiceError(422, "bad_arguments", "arguments must be a JSON object")
+            _out(svc.author_candidate(args.source_id, args.attempt, args.start, args.end,
+                 {"predicate": args.predicate, "subject": args.subject, "arguments": arguments}, args.reason,
+                 idempotency_key=args.idempotency_key))
             return OK
         if args.cmd in ("approve", "reject"):
             out = []

@@ -12,7 +12,7 @@ and advanced breadth to follow a usable generic release.
 | Purpose-relative completeness (04) | `purposes.py`; role binding, generation coherence, lifecycle obligations, UI/export/checker | Conditional applicability and richer coherence rules; user profile editing |
 | Stateful experiments and reduction (05, 07) | Independent reference/candidate KV stores, three-way replay, crash enumeration, bounded reducer, fresh-process counterexample verification; external subject adapter | Other proposed synthetic systems (transformation pipeline and seeded scheduler) with their own witnessed defects and reduced reproducers; hardened executable isolation |
 | Temporal reasoning (06) | Exact decimal interval reasoning and `interval.relation`; independent re-derivation | Richer temporal UI and additional rule families |
-| Admission and document review (08, 17) | PDF/JSON/Markdown/SQL, subprocess limits, coverage, exact spans, append-only review, stale runs; adversarial and workflow suites | Hardened OS sandbox, optional OCR, trusted signatures, arbitrary free-prose claim authoring; directory-package admission is outside the current upload path |
+| Admission and document review (08, 17) | PDF/JSON/Markdown/SQL, subprocess limits, coverage, exact spans, append-only review, stale runs; adversarial and workflow suites | Hardened OS sandbox, optional OCR, trusted signatures, directory-package admission is outside the current upload path |
 | Campaigns and independent reports (09–10) | Fixed mutation/metamorphic manifests, defective controls, independent totals/witness checking, external verifier adapter | Broader mutation/rule coverage and independently implemented language/runtime checker |
 | Generic risk packs (11) | Strict data-only grammar, three-valued applicability, dependency/version checks, UI obligations and proposed remediation | Catalog breadth; reviewed jurisdiction source mappings |
 | Packaging and release evidence (12, chapter 13 K) | `tools/check_release.py`: hashed Python build/parser inputs, two matching clean wheel builds, exact content allowlist, isolated offline installs, four-format CLI and optional installed-wheel Chromium journey; CI definition added | CI must actually execute remotely; broader platform matrix; full provenance/license review and owner release review |
@@ -40,6 +40,17 @@ rather than adding unreviewed regulatory content:
 See [RELEASE.md](RELEASE.md) for the reproducible commands and evidence boundaries. Existing
 unit/contract/adversarial/integration tests remain a separate required gate; the release helper does
 not substitute a smoke test for that suite. No files have been published or signed.
+
+## Source-linked authoring continuation
+
+The shared service, HTTP API and CLI now create pending human interpretations from exact UTF-8
+rendition spans. The source view provides read-only passage selection and an equality-claim form.
+Approval stays a separate action. The independent checker binds origin spans to their immutable
+extraction and records that semantic entailment is not machine-verified. Extraction facts and
+coverage remain unchanged; authoring cannot manufacture evidence. Tests cover Unicode boundaries,
+invalid/stale selections, idempotency, persistence, source replacement, HTTP authorization,
+non-equality built-in predicates through the service/CLI, export verification and provenance tampering.
+The browser journey exercises the new flow against an installed wheel.
 
 ## Next work
 

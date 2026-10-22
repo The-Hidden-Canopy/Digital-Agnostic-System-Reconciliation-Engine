@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS candidates(
   id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, source_id TEXT NOT NULL, fact_key TEXT NOT NULL,
   predicate_json TEXT NOT NULL, span_id TEXT NOT NULL, qualifiers_json TEXT NOT NULL, ord INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS cand_attempt ON candidates(attempt_id, ord);
+CREATE TABLE IF NOT EXISTS authored_spans(
+  candidate_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, span_id TEXT NOT NULL,
+  fact_json TEXT NOT NULL, reason TEXT NOT NULL, UNIQUE(attempt_id, span_id, candidate_id));
 CREATE TABLE IF NOT EXISTS decisions(
   id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL, n INTEGER NOT NULL, action TEXT NOT NULL,
   reason TEXT, body_json TEXT NOT NULL, claim_revision_id TEXT, created_seq INTEGER NOT NULL,

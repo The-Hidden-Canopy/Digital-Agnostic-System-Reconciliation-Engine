@@ -345,6 +345,65 @@ class Service:
                 "note": "inert text; never rendered as markup"}
 
     # --------------------------------------------------------------- candidates
+    def author_candidate(self, source_id: str, attempt_id: str, byte_start: int, byte_end: int,
+                         interpretation: dict, reason: str, *, idempotency_key: str | None = None) -> dict:
+        """Propose a human interpretation; never modify extraction facts or approve automatically."""
+        if not isinstance(source_id, str) or not isinstance(attempt_id, str):
+            raise ServiceError(422, "bad_author_request", "source and attempt identifiers must be strings")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 4000:
+            raise ServiceError(422, "author_reason_required", "explain the interpretation in 1–4000 characters")
+        if not isinstance(interpretation, dict) or set(interpretation) != {"predicate", "subject", "arguments"}:
+            raise ServiceError(422, "bad_interpretation", "predicate, subject and arguments are required")
+        final = self._validate_edit({}, interpretation)
+        payload = {"source_id": source_id, "attempt_id": attempt_id, "byte_start": byte_start,
+                   "byte_end": byte_end, "interpretation": final, "reason": reason.strip()}
+        with self.store.tx() as db:
+            prior = self._idem("author_candidate", idempotency_key, payload)
+            if prior is not None:
+                return self.get_candidate(prior["id"])
+            src = self._source_row(source_id)
+            if src["superseded_by"] or src["current_attempt"] != attempt_id:
+                raise ServiceError(409, "source_changed", "reload the source before selecting a span")
+            att = db.execute("SELECT * FROM attempts WHERE id=? AND source_id=?", (attempt_id, source_id)).fetchone()
+            if not att or att["state"] != "EXTRACTED":
+                raise ServiceError(409, "source_not_ready")
+            rec = self._record_for_attempt(att)
+            rend = read_blob(self.store.blobs, rec["rendition_digest"])
+            if (type(byte_start) is not int or type(byte_end) is not int or
+                    not 0 <= byte_start < byte_end <= len(rend) or byte_end - byte_start > 16000):
+                raise ServiceError(422, "bad_source_span", "select 1–16000 bytes within the current rendition")
+            try:
+                rend[:byte_start].decode("utf-8")
+                text = rend[byte_start:byte_end].decode("utf-8")
+                if not text.strip():
+                    raise ValueError("blank source selection")
+            except (UnicodeError, ValueError) as exc:
+                raise ServiceError(422, "bad_source_span", "selection must contain text on UTF-8 boundaries") from exc
+            loc = {"byte_start": byte_start, "byte_end": byte_end}
+            span_id = record_id("span", {"source_digest": rec["source_digest"],
+                "rendition_digest": rec["rendition_digest"], "extraction_manifest_id": rec["manifest"]["id"],
+                "locator": loc})
+            cid = record_id("authored-candidate", payload)
+            fact = {"key": final["subject"], "value": {"kind": "string", "value": text},
+                    "grammar": "reviewed-text", "span_id": span_id, "locator": loc,
+                    "extraction_method": "human-selected-text", "token_digest": sha256_digest(rend[byte_start:byte_end])}
+            db.execute("INSERT OR IGNORE INTO authored_spans VALUES(?,?,?,?,?)",
+                       (cid, attempt_id, span_id, jdump(fact), reason.strip()))
+            ordinal = db.execute("SELECT COALESCE(MAX(ord),0)+1 FROM candidates WHERE attempt_id=?", (attempt_id,)).fetchone()[0]
+            db.execute("INSERT OR IGNORE INTO candidates VALUES(?,?,?,?,?,?,?,?)", (cid, attempt_id, source_id,
+                       final["subject"], jdump(final), span_id,
+                       jdump(["human interpretation of selected text; semantic entailment is not machine-verified"]), ordinal))
+            self._idem_store("author_candidate", idempotency_key, payload, {"id": cid})
+        return self.get_candidate(cid)
+
+    def _origin_fact(self, rec: dict, attempt_id: str, span_id: str, candidate_id: str | None = None):
+        if candidate_id:
+            authored = self.store.q1("SELECT fact_json FROM authored_spans WHERE candidate_id=? AND attempt_id=? AND span_id=?",
+                                       (candidate_id, attempt_id, span_id))
+            if authored:
+                return jload(authored[0])
+        return next((f for f in rec["facts"] if f["span_id"] == span_id), None)
+
     def _decisions(self, candidate_id: str):
         return self.store.q("SELECT * FROM decisions WHERE candidate_id=? ORDER BY n", (candidate_id,))
 
@@ -354,12 +413,12 @@ class Service:
             return "PENDING"
         return {"APPROVE": "APPROVED", "APPROVE_WITH_EDIT": "APPROVED", "REJECT": "REJECTED", "DEFER": "DEFERRED"}[last[0]]
 
-    def _span_view(self, attempt_id: str, span_id: str, context: int = 300) -> dict | None:
+    def _span_view(self, attempt_id: str, span_id: str, context: int = 300, candidate_id: str | None = None) -> dict | None:
         att = self.store.q1("SELECT * FROM attempts WHERE id=?", (attempt_id,))
         rec = self._record_for_attempt(att)
         if not rec:
             return None
-        fact = next((f for f in rec["facts"] if f["span_id"] == span_id), None)
+        fact = self._origin_fact(rec, attempt_id, span_id, candidate_id)
         if not fact:
             return None
         rend = read_blob(self.store.blobs, rec["rendition_digest"])
@@ -385,8 +444,11 @@ class Service:
                 "claim_revision_id": None}
         rev = self.store.q1("SELECT id FROM claim_revisions WHERE candidate_id=? AND status='CURRENT'", (row["id"],))
         view["claim_revision_id"] = rev["id"] if rev else None
+        authored = self.store.q1("SELECT reason FROM authored_spans WHERE candidate_id=?", (row["id"],))
+        view["authored"] = bool(authored)
+        view["author_reason"] = authored[0] if authored else None
         if detail:
-            view["span"] = self._span_view(row["attempt_id"], row["span_id"])
+            view["span"] = self._span_view(row["attempt_id"], row["span_id"], candidate_id=row["id"])
             view["decisions"] = [{"id": d["id"], "n": d["n"], "action": d["action"], "reason": d["reason"],
                                   "created_at": d["created_at"], "claim_revision_id": d["claim_revision_id"],
                                   "body": jload(d["body_json"])} for d in decisions]
@@ -423,9 +485,15 @@ class Service:
         rows = self.store.q("SELECT c.* FROM candidates c JOIN sources s ON s.id=c.source_id "
                             "WHERE c.fact_key=? AND c.id<>? AND s.current_attempt=c.attempt_id",
                             (row["fact_key"], candidate_id))
-        mine = jload(row["predicate_json"])["arguments"]["expected"]
+        mine_pred = jload(row["predicate_json"])
+        if mine_pred["predicate"] != "fact.equals":
+            return []
+        mine = mine_pred["arguments"]["expected"]
         for r in rows:
-            other = jload(r["predicate_json"])["arguments"]["expected"]
+            other_pred = jload(r["predicate_json"])
+            if other_pred["predicate"] != "fact.equals":
+                continue
+            other = other_pred["arguments"]["expected"]
             eq = V.compare_equal(mine, other)
             kind = "DUPLICATE" if eq else "POSSIBLE_CONTRADICTION" if eq is False else "NEEDS_REVIEW"
             src = self._source_row(r["source_id"])
@@ -669,7 +737,7 @@ class Service:
             origin = body["origin"]
             rec, src_art, _ = source_bundle(origin["source_id"], origin["attempt_id"])
             dec = self.store.q1("SELECT * FROM decisions WHERE id=?", (body["decision_id"],))
-            fact = next(f for f in rec["facts"] if f["span_id"] == origin["span_id"])
+            fact = self._origin_fact(rec, origin["attempt_id"], origin["span_id"], body["candidate_id"])
             rend = read_blob(self.store.blobs, rec["rendition_digest"])
             loc = fact["locator"]
             asm_ids = []
@@ -686,6 +754,10 @@ class Service:
                     "decision": {"id": dec["id"], "action": dec["action"], "reason": dec["reason"],
                                  "edited": body["original"] is not None, "original": body["original"]},
                     "interpretation_note": "approval records what to test, not that the statement is true"}
+            authored = self.store.q1("SELECT reason FROM authored_spans WHERE candidate_id=?", (body["candidate_id"],))
+            if authored:
+                prov["authoring"] = {"method": "human-selected-text", "reason": authored[0],
+                                     "semantic_entailment": "not_machine_verified"}
             prov_art = add_blob(canonical_bytes(prov), PROVENANCE_MEDIA)
             claim = Claim.make(body["predicate"], body["subject"], body["arguments"],
                                [prov_art.id] + evidence_artifact_ids, asm_ids)

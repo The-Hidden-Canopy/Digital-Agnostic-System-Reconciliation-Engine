@@ -101,6 +101,8 @@ def _num(tok: str):
 
 
 def derive_value(grammar: str, token: str):
+    if grammar == "reviewed-text":
+        return {"kind": "string", "value": token}
     if grammar == "json-literal":
         if token in ("true", "false", "null"):
             return {"kind": "boolean" if token != "null" else "null",
@@ -287,7 +289,7 @@ def _verify(path: Path, rep: Report):
     claim_index = {c["claim_id"]: c for c in result.get("claims", [])}
     seen_claims = set()
     for cid, c in claims.items():
-        _check_provenance(c, files, arts, rep)
+        _check_provenance(c, files, arts, rep, records)
     for f in result["findings"]:
         entry = {"finding_id": f.get("id"), "accepted": False, "checked": "re-derived", "detail": ""}
         rep.findings.append(entry)
@@ -618,13 +620,20 @@ def _verify_fact(files, arts, rend_id, fact) -> dict:
     return value
 
 
-def _check_provenance(claim, files, arts, rep):
+def _check_provenance(claim, files, arts, rep, records=None):
     prov_ref = next((r for r in claim["evidence_refs"] if r in arts and arts[r]["media_type"] == PROVENANCE_MEDIA), None)
     name = f"provenance:{claim['id'][-8:]}"
     if prov_ref is None:
         rep.check(name, False, "claim has no provenance artifact")
         return
     prov = _strict(files[arts[prov_ref]["relative_path"]])
+    if prov.get("origin_span", {}).get("grammar") == "reviewed-text":
+        author = prov.get("authoring", {})
+        if not rep.check(name + ":human_interpretation", author.get("method") == "human-selected-text"
+                         and isinstance(author.get("reason"), str) and bool(author["reason"].strip())
+                         and author.get("semantic_entailment") == "not_machine_verified",
+                         "human interpretation is explicit; entailment is not machine-verified"):
+            return
     dec = prov.get("decision", {})
     ok = dec.get("action") in ("APPROVE", "APPROVE_WITH_EDIT") and bool(dec.get("id"))
     if dec.get("action") == "APPROVE_WITH_EDIT":
@@ -635,6 +644,28 @@ def _check_provenance(claim, files, arts, rep):
     origin = arts.get(prov["origin_source_artifact_id"])
     if not rep.check(name + ":origin_artifact", origin is not None):
         return
+    if records is not None:
+        rec, _ = records.get(prov["origin_source_artifact_id"], (None, None))
+        linked = rec is not None and rec["source_digest"] == origin["digest"] \
+            and span["rendition_digest"] == rec["rendition_digest"] \
+            and span["extraction_manifest_id"] == rec["manifest"]["id"]
+        if not rep.check(name + ":extraction_binding", linked, "origin span binds to the source's extraction"):
+            return
+        if span["grammar"] != "reviewed-text":
+            fact = next((f for f in rec["facts"] if f["span_id"] == span["span_id"]), None)
+            if not rep.check(name + ":extracted_fact", fact is not None and all(
+                    fact[k] == span[k] for k in ("locator", "grammar", "key", "value")),
+                    "extracted provenance matches the immutable extraction record"):
+                return
+        else:
+            loc = span["locator"]
+            valid = type(loc.get("byte_start")) is int and type(loc.get("byte_end")) is int \
+                and 0 <= loc["byte_start"] < loc["byte_end"] <= loc["byte_start"] + 16000
+            expected_span = _rid("span", {"source_digest": rec["source_digest"],
+                "rendition_digest": rec["rendition_digest"], "extraction_manifest_id": rec["manifest"]["id"],
+                "locator": loc})
+            if not rep.check(name + ":selected_span_identity", valid and expected_span == span["span_id"]):
+                return
     rend_id = next((i for i, a in arts.items() if a["digest"] == span["rendition_digest"]), None)
     try:
         token = _slice(files, arts, rend_id, span["locator"]["byte_start"], span["locator"]["byte_end"])

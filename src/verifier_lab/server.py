@@ -200,6 +200,13 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "events":
                 return self._json(200, svc.job_events(parts[1], int(qs.get("after", 0))))
         else:
+            if parts == ["candidates"]:
+                body = self._json_body()
+                fields = {"source_id", "attempt_id", "byte_start", "byte_end", "interpretation", "reason"}
+                if not isinstance(body, dict) or set(body) != fields:
+                    raise ServiceError(422, "bad_author_request", "supply source, attempt, byte span, interpretation and reason")
+                res = svc.author_candidate(**body, idempotency_key=h.get("Idempotency-Key"))
+                return self._json(201, res, {"ETag": res["etag"]})
             if parts == ["sources"]:
                 data = self._body(svc.admission.max_bytes + 1)
                 res = svc.import_source(

@@ -59,3 +59,25 @@ Request `{"cmd":"verify","scenario":{id, origin{name,fmt,text,sha256}, evidence[
 `{"ok":true,"outcomes":{"<claim key>":["<VERDICT>","<reason_code>"]}}`. One fresh process per scenario. See `examples/reference_verifier.py`.
 
 Both program protocols are CLI-only (`--subject-cmd`, `--kernel-cmd`): the web API refuses commands, and nothing imported can select a program to run.
+
+## Human-authored source-linked candidates
+
+`POST /api/v1/candidates` creates a **pending** human interpretation, not an extracted fact or an
+approved claim. Supply `source_id`, the displayed current `attempt_id`, `byte_start` and exclusive
+`byte_end` in the UTF-8 text rendition, an `interpretation` object (`predicate`, `subject`,
+`arguments`), and a nonempty `reason`. A selection must cover nonblank text, lie on UTF-8 boundaries
+and contain at most 16000 bytes. A changed or replaced source requires reloading and selecting again.
+An optional `Idempotency-Key` deduplicates retries and rejects reuse with different input.
+
+The UI offers selection from read-only source text and equality claim entry. The CLI exposes
+`source <source-id>` and `author <source-id> --attempt <attempt-id> --start <byte> --end <byte>
+--subject <fact-key> --arguments '<JSON object>' --reason '<interpretation reason>'`, with
+`--predicate` for other installed built-in rules. A separate normal review decision remains required.
+Authored candidates are excluded from unqualified bulk approval.
+
+Original extraction records and their coverage are unchanged. Selected spans are stored separately
+and compiled into provenance with grammar `reviewed-text` (the exact UTF-8 token as a string), an
+explicit human authoring reason, and `semantic_entailment: not_machine_verified`. The independent
+checker verifies that byte linkage and labeling; it does not infer that free prose logically entails
+the reviewed claim. Authored interpretations never become evidence facts. Source replacement and
+claim revision changes retain history and mark dependent runs stale through the existing rules.
