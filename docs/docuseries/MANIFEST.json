@@ -1,0 +1,103 @@
+{
+  "artifact": "Agnostic Verification Laboratory E2E Docuseries",
+  "baseline": "2026-10-21",
+  "status": "implementation specification; not executed application",
+  "chapters": 18,
+  "files": [
+    {
+      "name": "README.md",
+      "bytes": 5701,
+      "sha256": "0e0ba0c1a3cb0536aee406545ffbb3c6776b9a0e19777586d3d0acdbc14bf362"
+    },
+    {
+      "name": "00_overview_and_build_order.md",
+      "bytes": 9963,
+      "sha256": "095367360a072591426ef69bf71c296930a479ebbd399b6fb990c380e9baa4fb"
+    },
+    {
+      "name": "01_neutral_types_and_evidence_contract.md",
+      "bytes": 7601,
+      "sha256": "867b71499bcd7e506f9d50edf79d8f33804843086e194cac913d56536d0fb9a0"
+    },
+    {
+      "name": "02_deterministic_core_and_dispatch.md",
+      "bytes": 7244,
+      "sha256": "d0b9535e050857e9af65e515f7880bcc967520b64625e696e9a57850a879bd0a"
+    },
+    {
+      "name": "03_composition_and_dependency_solver.md",
+      "bytes": 6876,
+      "sha256": "42c0e90d5fa577514c73523a6f081d1da788660a0804e300ae026663aafa228e"
+    },
+    {
+      "name": "04_purpose_relative_completeness.md",
+      "bytes": 7268,
+      "sha256": "6eed8a43e579593b5b14290bc8b691350d6aefdc4bf77b80917e69e4895f2732"
+    },
+    {
+      "name": "05_replay_and_checkpoint_experiments.md",
+      "bytes": 6537,
+      "sha256": "5e058934a5a71da8cafee775d3cadc771e49a590286e34b49399a92cb63bd859"
+    },
+    {
+      "name": "06_uncertainty_and_temporal_reasoning.md",
+      "bytes": 6848,
+      "sha256": "9c0432c984e82b6aa99b999b52d205ca48543bcb36c27b8be686978280e5698e"
+    },
+    {
+      "name": "07_failure_minimization.md",
+      "bytes": 6901,
+      "sha256": "c1a56a9404926ad781a57affb973aee9d9383cf3f4b50352d8d29e43bbb5b9ac"
+    },
+    {
+      "name": "08-secure-evidence-ingestion.md",
+      "bytes": 9342,
+      "sha256": "642e3bd3250360647caa9f3ee25a6eaa5bce66d8bf5bd78c8d817f29ee94deb3"
+    },
+    {
+      "name": "09-mutation-and-metamorphic-testing.md",
+      "bytes": 8697,
+      "sha256": "eccb52b743319ef422a7fe06822fdba7e733e0e80d41bfb570b28c7e1efe22b3"
+    },
+    {
+      "name": "10-independent-checker-and-campaign-reports.md",
+      "bytes": 8495,
+      "sha256": "48e942a483a7328f8f1f97504726597c1c4cc4da05572b37e5d76d6d82ad71cf"
+    },
+    {
+      "name": "11-generic-risk-pack-engine.md",
+      "bytes": 9029,
+      "sha256": "eda17fb862a608615f3143db409c58ac8d70e9ad3bf3bb93d178d0ae488e14e1"
+    },
+    {
+      "name": "12-packaging-ci-and-reproducible-release.md",
+      "bytes": 8652,
+      "sha256": "77cae9570e24bb20eafd613d000d42b44549c42ab584e505b7e2bbfb3e416852"
+    },
+    {
+      "name": "13-skrrt-end-to-end-implementation-plan.md",
+      "bytes": 10535,
+      "sha256": "35a586734f79cb448698f6d4ce80596f38a9f4cd89a14642b6105bb93b0a6ebe"
+    },
+    {
+      "name": "chapter14_EU_US_Risk_Packs.md",
+      "bytes": 16149,
+      "sha256": "10b2ebd76e9020443fbed3827c18850a1d71fd17500b0d8e2ed81dad2a8aa754"
+    },
+    {
+      "name": "chapter15_China_Australia_Risk_Packs.md",
+      "bytes": 17069,
+      "sha256": "9c2d6b7ac035fd15ace4179488ed383dd252340ddf9960f4ec3cc13f7942c7d2"
+    },
+    {
+      "name": "16_UI_Workbench.md",
+      "bytes": 16948,
+      "sha256": "acf27b8d7393ea9a0f17626478589ced9880be43e4893ac4fac49aa0169c785d"
+    },
+    {
+      "name": "17_Document_Ingestion_Reconciliation.md",
+      "bytes": 18066,
+      "sha256": "9a0391307f622079a84729326bf9ece0ec7f18a5daa7e5c63941d10c64522641"
+    }
+  ]
+}
