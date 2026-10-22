@@ -349,6 +349,7 @@ async function viewRun(runId) {
   const live = begin();
   setNav("run");
   const [claims, sources, runs, packs] = await Promise.all([api("GET", "claims"), api("GET", "sources"), api("GET", "runs"), api("GET", "packs")]);
+  const purposes = (await api("GET", "purposes")).items;
   const cur = claims.items.filter((c) => c.status === "CURRENT");
   const ready = sources.items.filter((s) => s.attempt && s.attempt.state === "EXTRACTED" && !s.superseded_by);
   const preview = h("div", { role: "status", "aria-live": "polite" });
@@ -363,6 +364,24 @@ async function viewRun(runId) {
       return h("div", {}, h("label", { class: "inline" }, cb, h("span", {}, h("strong", { text: p.title }), ` v${p.version}, ${p.obligations} obligations`)), h("div", { class: "muted mono", text: p.digest })); })
       : h("p", { class: "muted", text: "No packs installed." }),
     packHint, h("label", { for: "ctx", text: "Context facts (one per line: key = value; true, false, null, integers or text)" }), ctxArea);
+  const purposeBoxes = new Map(), roleInputs = new Map();
+  const purposePanel = h("details", { class: "card" }, h("summary", { text: "Purpose (optional): is this evidence enough for what you want to do?" }),
+    h("p", { class: "muted", text: "Completeness is relative to a purpose. A package can be enough to inspect something and not enough to resume from it. Bind each role by naming the fact key that states it - roles are never guessed from file names." }),
+    purposes.map((pr) => {
+      const inputs = pr.roles.map((r) => { const inp = h("input", { id: `role-${pr.profile_id}-${r.role}`, size: 38, placeholder: "fact key, e.g. checkpoint.allocator_next (comma-separate several)" }); roleInputs.set(pr.profile_id + "/" + r.role, inp);
+        return h("div", {}, h("label", { for: inp.id, text: `${r.role}${r.optional ? " (optional)" : ""} - ${r.value_kind}, ${r.min}..${r.max === null ? "any" : r.max}` }), r.description ? h("div", { class: "muted", text: r.description }) : null, inp); });
+      const box = h("div", { hidden: true, style: "margin:.4rem 0 .8rem 1.4rem" }, inputs,
+        pr.coherence.length ? h("p", { class: "muted", text: "Coherence: " + pr.coherence.map((c) => `sources must agree on ${c.fact}`).join("; ") }) : null,
+        pr.lifecycle ? h("p", { class: "muted", text: `Lifecycle: needs recorded history events up to '${pr.lifecycle.target}' (a boolean saying so is not a record)` }) : null);
+      const cb = h("input", { type: "checkbox", id: "pu-" + pr.profile_id, onchange: () => { box.hidden = !cb.checked; upd(); } });
+      purposeBoxes.set(pr.profile_id, cb);
+      return h("div", {}, h("label", { class: "inline", for: cb.id }, cb, h("span", {}, h("strong", { text: pr.title }), ` v${pr.version}`)), h("div", { class: "muted", text: pr.description }), box);
+    }));
+  const purposeRequests = () => [...purposeBoxes].filter(([, c]) => c.checked).map(([id]) => {
+    const pr = purposes.find((x) => x.profile_id === id), bindings = {};
+    for (const r of pr.roles) { const v = roleInputs.get(id + "/" + r.role).value.split(",").map((x) => x.trim()).filter(Boolean); if (v.length) bindings[r.role] = v; }
+    return { profile_id: id, version: pr.version, bindings };
+  });
   const parseContext = () => {
     const out = {};
     for (const raw of ctxArea.value.split("\n")) {
@@ -382,13 +401,13 @@ async function viewRun(runId) {
     }
     put(preview, h("p", { text: `${nc} claim${nc === 1 ? "" : "s"} × ${ns} evidence source${ns === 1 ? "" : "s"}.` }),
       ...warnings.map((w) => h("div", { class: "notice warn", text: w })));
-    startBtn.disabled = !(nc && ns);
+    startBtn.disabled = !(ns && (nc || purposeRequests().length));
   };
   startBtn.addEventListener("click", async () => {
     startBtn.disabled = true;
     try {
       const r = await api("POST", "runs", { body: { claim_revision_ids: [...state.runSel.claims], evidence_source_ids: [...state.runSel.sources],
-        pack_ids: [...packBoxes].filter(([, c]) => c.checked).map(([id]) => id), context: parseContext() }, headers: { "Idempotency-Key": crypto.randomUUID() } });
+        pack_ids: [...packBoxes].filter(([, c]) => c.checked).map(([id]) => id), context: parseContext(), purposes: purposeRequests() }, headers: { "Idempotency-Key": crypto.randomUUID() } });
       announce("Run started."); location.hash = "#/run/" + enc(r.run_id); pollJobs(true);
     } catch (e) { preview.append(errorBox(e)); startBtn.disabled = false; }
   });
@@ -402,7 +421,7 @@ async function viewRun(runId) {
         cur.length ? h("button", { text: "Select all", onclick: () => { cur.forEach((c) => state.runSel.claims.add(c.id)); viewRun(runId); } }) : null),
       h("div", { class: "card" }, h("h2", { text: "Evidence to test against" }),
         ready.length ? h("ul", { style: "list-style:none;padding:0" }, ready.map((s) => cbox(state.runSel.sources, s.id, `${s.name} (${s.format}, coverage ${s.attempt.coverage})`))) : h("p", { class: "muted", text: "No completed extractions yet." }))),
-    packPanel,
+    purposePanel, packPanel,
     h("div", { class: "card" }, preview, startBtn,
       h("p", { class: "muted", text: "A run records verdicts for these exact claim revisions and this evidence snapshot. Closing this tab does not cancel it." })),
     h("div", { id: "rundetail" }),
@@ -454,14 +473,27 @@ async function viewFindings(runId, claimId) {
       h("h2", { text: "Verdict counts (all six shown)" }),
       h("div", { class: "row" }, Object.keys(VERDICTS).map((v) => h("span", {}, verdictBadge(v), ` ${counts[v] || 0}`))),
       run.errors.length ? h("div", { class: "notice bad" }, h("strong", { text: "Execution errors (separate from verdicts): " }), run.errors.length) : null),
+    (run.purposes || []).length ? purposesCard(run) : null,
     (run.obligations || []).length ? obligationsCard(run, id) : null,
-    h("div", { class: "card" }, h("div", { class: "row" }, h("label", { class: "inline" }, "Show ", filter)),
-      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Verdict", "Subject", "Predicate", "Reason", ""].map((t) => h("th", { text: t })))), tbody))), detail);
+    run.findings.length ? h("div", { class: "card" }, h("div", { class: "row" }, h("label", { class: "inline" }, "Show ", filter)),
+      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Verdict", "Subject", "Predicate", "Reason", ""].map((t) => h("th", { text: t })))), tbody))) : h("p", { class: "muted", text: "This run evaluated no claims (purpose assessment only)." }), detail);
   draw();
   if (claimId) {
     const f = run.findings.find((x) => x.claim_id === claimId);
     if (f) findingDetail(detail, f, run);
   }
+}
+
+function purposesCard(run) {
+  return h("div", { class: "card" }, h("h2", { text: "Purpose assessments" }),
+    h("div", { class: "notice", text: "Each purpose states what this evidence suffices for. It is never a statement that a package is simply 'complete'. Every obligation keeps its own verdict." }),
+    run.purposes.map((p) => h("div", { style: "margin-bottom:1.2rem" }, h("h3", {}, p.profile.profile_id + " v" + p.profile.profile_version + "  ", verdictBadge(p.overall)),
+      p.newer_version ? h("div", { class: "notice warn" }, `A newer version (v${p.newer_version}) is installed. This report keeps the version it was produced with; `, h("a", { href: "#/run", text: "evaluate again with the newer one" }), ".") : null,
+      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Obligation", "Verdict", "Reason", "What could resolve it"].map((t) => h("th", { text: t })))),
+        h("tbody", {}, p.obligations.map((o) => h("tr", {}, h("td", {}, h("code", { text: o.id })), h("td", {}, verdictBadge(o.verdict)), h("td", { text: o.reason.replace(/_/g, " ") }),
+          h("td", {}, o.would_resolve || "-", o.witness && o.witness.values && o.verdict === "CONTRADICTED" ? h("div", { class: "mono muted", text: "saw: " + o.witness.values.map((v) => `${v.source}=${JSON.stringify(v.value.value)}`).join(" vs ") }) : null)))))),
+      h("p", { class: "muted", text: p.scope.statement + " Evaluated: " + (p.scope.evaluated_sources.join(", ") || "none") + (p.scope.sources_outside_evaluation_scope.length ? ". Outside this purpose's scope: " + p.scope.sources_outside_evaluation_scope.join(", ") : "") }),
+      h("details", {}, h("summary", { text: "Pinned profile and bindings" }), h("pre", { class: "src", text: JSON.stringify({ profile: p.profile, bindings: p.bindings }, null, 2) })))));
 }
 
 function obligationsCard(run, runId) {

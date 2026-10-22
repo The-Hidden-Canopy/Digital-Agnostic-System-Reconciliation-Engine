@@ -1,0 +1,24 @@
+{
+ "history": [
+  {
+   "stage": "observed",
+   "seq": 1,
+   "clock": "c1"
+  },
+  {
+   "stage": "persisted",
+   "seq": 2,
+   "clock": "c1"
+  },
+  {
+   "stage": "recoverable",
+   "seq": 3,
+   "clock": "c1"
+  },
+  {
+   "stage": "invalidated",
+   "seq": 1,
+   "clock": "c2"
+  }
+ ]
+}

@@ -78,6 +78,19 @@ shrinking of campaign failures through the minimizer, bundle-level (rather than 
 Containment is accidental-damage protection, not a sandbox for hostile code. The campaign page still judges only the built-in
 verifier kernels; pointing a campaign at an external verifier program is not built.
 
+## Added in increment six (chapter 04, purpose-relative completeness)
+
+| Area | Implemented | Evidence |
+|---|---|---|
+| Purpose profiles | `purposes.py`: data-only, digest-pinned, immutable versions; roles with explicit cardinality, value kind and optionality; an invalid profile (min > max, cyclic lifecycle, unknown fields) is a *profile* error, not a subject failure; mechanical `strengthens()` relation that never compares names | `tests/unit/test_purposes.py` |
+| Assessment | Roles are bound by naming fact keys (never inferred from file names). Per-obligation verdicts for roles, a `same_value` coherence rule (torn generations fail despite valid hashes) and a lifecycle graph (prerequisites must be recorded events, not boolean flags; a later same-clock invalidation beats an older success; different clocks are ambiguous and keep both records). No overall SUPPORTED while any obligation is unmet or unexecuted; each assessment lists what could resolve it and what was outside scope | same + fixture matrix |
+| In runs and exports | Profile and bindings are bundle artifacts pinned by digest; `result.json.purposes`; purpose-only runs (no claims) allowed; a newer installed version is *offered*, never applied to an old report; the independent checker re-derives every obligation from verified token bytes and rejects laundered, dropped, hidden or invented assessments | `tests/e2e/test_purpose_workflow.py` |
+| UI | Purpose panel on Run (role-by-role binding), Purpose assessments on Findings with per-obligation reasons, witnesses and "what could resolve it" | browser journey |
+
+Scope: two example profiles about a fictional checkpoint (`inspect-checkpoint`, `resume-exactly`); coherence supports only `same_value`;
+lifecycle history is read from `<history>[i].stage|seq|clock` facts. Not built: richer coherence rules, user-authored profile editing in the UI,
+and applicability conditions on profiles (a profile that is `NOT_APPLICABLE` to a claim).
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -92,7 +105,7 @@ verifier kernels; pointing a campaign at an external verifier program is not bui
 
 ## Not built yet (explicitly out of this increment)
 
-Purpose profiles (04), composition obligations (03), mutation/metamorphic campaigns and campaign reports (09, most of 10),
+Composition obligations (03), mutation/metamorphic campaigns and campaign reports (09, most of 10),
 adapters that point *campaigns* at an external verifier; the EU/US/China/Australia packs (14, 15) — **no jurisdiction content exists
 here**; OCR; signatures and trust anchors; model-assisted suggestions; manual creation of claims from free prose;
 manual claim editing beyond the three predicates; dependency-graph and temporal-replay views; multi-project support.

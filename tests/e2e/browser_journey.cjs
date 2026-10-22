@@ -119,6 +119,26 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.click('button:has-text("Forge the passing total")');
   await page.waitForSelector('text=Forged report: REJECTED');
 
+  // 4e. purpose assessment from the UI: a torn package (two generations) is CONTRADICTED for the strong purpose
+  const PUR = path.resolve(__dirname, '../../fixtures/purposes/') + '/';
+  await page.goto(BASE + '#/import');
+  await page.setInputFiles('#files', ['map.json', 'counters-g6.json', 'history.json'].map((f) => PUR + f));
+  await page.click('button[type=submit]');
+  await page.waitForFunction(() => !/QUEUED|PARSING/.test(document.querySelector('main').innerText) && /counters-g6\.json/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
+  await page.waitForTimeout(1500);
+  await page.goto(BASE + '#/run');
+  for (const n of ['map.json', 'counters-g6.json', 'history.json']) await page.locator('li', { hasText: n }).locator('input').check();
+  await page.click('summary:has-text("Purpose (optional)")');
+  await page.locator('label', { hasText: 'Resume exactly from a checkpoint' }).locator('input').check();
+  const BIND = { entries_count: 'entries_count', allocator_next: 'allocator_next', random_cursor: 'random_cursor', operation_cursor: 'operation_cursor', semantics_version: 'semantics_version' };
+  for (const [r, k] of Object.entries(BIND)) await page.fill(`#role-resume-exactly-${r}`, 'checkpoint.' + k);
+  await page.click('button:has-text("Start run")');
+  await page.waitForSelector('text=Open findings', { timeout: 60000 });
+  await page.click('text=Open findings >> nth=0');
+  await page.waitForSelector('text=Purpose assessments');
+  assert.ok((await page.innerText('main')).includes('sources from different generations'));
+  assert.ok((await page.innerText('main')).includes('g6'));
+
   // 5. export + independent checker
   await page.goto(BASE + '#/export');
   const [download] = await Promise.all([page.waitForEvent('download'), page.click('button:has-text("Download package")')]);

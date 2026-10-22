@@ -296,6 +296,7 @@ def _verify(path: Path, rep: Report):
             entry["accepted"], entry["detail"] = False, str(exc)
         seen_claims.add(f.get("claim_id"))
     _check_obligations(result, bundle, files, arts, claims, rep)
+    _check_purposes(result, bundle, files, arts, records, rep)
     missing = set(claims) - seen_claims
     rep.check("every_claim_has_a_finding", not missing, f"{len(missing)} claims without findings")
     rep.check("claim_index_complete", set(claim_index) == set(claims))
@@ -356,7 +357,10 @@ def _aggregate(vs):
 
 
 def _check_obligations(result, bundle, files, arts, claims, rep):
-    pack_refs = [p for p in bundle["profile_refs"] if p["profile_id"] != BUILTIN_PROFILE]
+    purpose_keys = {(b.get("profile_id"), b.get("version")) for b in
+                    (_strict(files[a["relative_path"]]) for a in arts.values() if a["media_type"] == "application/vnd.verifier-lab.purpose-profile+json")}
+    pack_refs = [p for p in bundle["profile_refs"] if p["profile_id"] != BUILTIN_PROFILE
+                 and (p["profile_id"], p["profile_version"]) not in purpose_keys]
     recorded = result.get("obligations")
     if not pack_refs:
         rep.check("no_risk_packs_no_obligations", not recorded and not result.get("risk_packs"),
@@ -410,6 +414,159 @@ def _check_obligations(result, bundle, files, arts, claims, rep):
         same = bool(g) and all(g.get(k) == e[k] for k in ("applicability", "verdict", "reason", "claim_ids", "finding_ids"))
         rep.check(f"obligation:{e['pack_id']}/{e['obligation_id']}", same,
                   f"re-derived {e['verdict']}/{e['reason']}; result says {g and (g.get('verdict'), g.get('reason'))}")
+
+
+PURPOSE_MEDIA = "application/vnd.verifier-lab.purpose-profile+json"
+PURPOSE_BINDINGS_MEDIA = "application/vnd.verifier-lab.purpose-bindings+json"
+_KIND = {"any": lambda k: True, "number": lambda k: k in ("integer", "decimal"), "integer": lambda k: k == "integer",
+         "decimal": lambda k: k == "decimal", "string": lambda k: k == "string", "boolean": lambda k: k == "boolean"}
+
+
+def _check_purposes(result, bundle, files, arts, records, rep):
+    pa = [a for a in arts.values() if a["media_type"] == PURPOSE_BINDINGS_MEDIA]
+    recorded = result.get("purposes")
+    if not pa:
+        rep.check("no_purposes_no_assessments", not recorded, "result carries purpose assessments although none is pinned in the bundle")
+        return
+    profiles = [_strict(files[a["relative_path"]]) for a in arts.values() if a["media_type"] == PURPOSE_MEDIA]
+    expected = []
+    for a in sorted(pa, key=lambda x: x["id"]):
+        b = _strict(files[a["relative_path"]])
+        ref = b["profile"]
+        body = next((p for p in profiles if p.get("profile_id") == ref["profile_id"] and p.get("version") == ref["profile_version"]), None)
+        if not rep.check(f"purpose_profile_artifact:{ref['profile_id']}", body is not None, "pinned profile bytes missing"):
+            continue
+        d = _dg(_canon({k: v for k, v in body.items() if k != "content_digest"}))
+        pinned = any(p["profile_id"] == ref["profile_id"] and p["profile_version"] == ref["profile_version"] and p["digest"] == d == body.get("content_digest")
+                     for p in bundle["profile_refs"])
+        if not rep.check(f"purpose_digest_pinned:{ref['profile_id']}", pinned, "profile content differs from the digest pinned in the bundle"):
+            continue
+        srcs = []
+        for sid in b["evidence_sources"]:
+            entry = records.get(sid)
+            if entry is None:
+                rep.check(f"purpose_evidence_extracted:{sid[-8:]}", False, "evidence source has no extraction record")
+                continue
+            rec, rend = entry
+            srcs.append({"id": sid, "name": arts[sid]["relative_path"], "coverage": rec["coverage"]["summary"], "facts": rec["facts"],
+                         "blocked": rec.get("blocked_keys", []), "rend": rend})
+        try:
+            expected.append((ref, _purpose(body, b["bindings"], srcs, files, arts)))
+        except Reject as exc:
+            rep.check(f"purpose_rederived:{ref['profile_id']}", False, str(exc))
+    got = result.get("purposes") or []
+    rep.check("purpose_set_complete", sorted((g["profile"]["profile_id"], g["profile"]["profile_version"]) for g in got)
+              == sorted((r["profile_id"], r["profile_version"]) for r, _ in expected), "assessments differ from the pinned purposes")
+    for ref, (overall, obs) in expected:
+        g = next((x for x in got if x["profile"]["profile_id"] == ref["profile_id"]), None)
+        mine = [(o[0], o[1], o[2]) for o in obs]
+        theirs = [(o["id"], o["verdict"], o["reason"]) for o in (g or {}).get("obligations", [])]
+        rep.check(f"purpose:{ref['profile_id']}", bool(g) and g["overall"] == overall and theirs == mine,
+                  f"re-derived {overall} {mine}; result says {g and g['overall']} {theirs}")
+
+
+def _purpose(profile, bindings, srcs, files, arts):
+    """Independent evaluator: returns (overall, [(obligation id, verdict, reason)])."""
+    usable = [s for s in srcs if s["coverage"] in ("PARSED", "PARTIALLY_PARSED")]
+    unreadable = [s for s in srcs if s["coverage"] not in ("PARSED", "PARTIALLY_PARSED")]
+    out, supplying = [], {}
+
+    def verified(s, f):
+        _verify_fact(files, arts, s["rend"], f)      # the cited token bytes must really say this
+        return f
+    for r in sorted(profile["roles"], key=lambda x: x["role"]):
+        role, mn, mx, vk = r["role"], r.get("min", 1), r.get("max", 1), r.get("value_kind", "any")
+        keys = bindings.get(role)
+        if keys is None:
+            if not r.get("optional"):
+                out.append((f"role:{role}", "INSUFFICIENT_EVIDENCE", "role_not_bound"))
+            continue
+        found = [(s, verified(s, f)) for s in usable for f in s["facts"] if f["key"] in keys]
+        blocked = [b for s in usable for b in s["blocked"] if b["key"] in keys]
+        oid = f"role:{role}"
+        if blocked:
+            out.append((oid, "INVALID_EVIDENCE", "role_key_ambiguous"))
+        elif any(not _KIND[vk](f["value"]["kind"]) for _, f in found):
+            out.append((oid, "INVALID_EVIDENCE", "role_value_invalid"))
+        elif len(found) < mn:
+            out.append((oid, "INSUFFICIENT_EVIDENCE", "role_missing_unreadable_sources_present" if unreadable else "role_missing"))
+        elif mx is not None and len(found) > mx:
+            out.append((oid, "INVALID_EVIDENCE", "cardinality_exceeded"))
+        else:
+            out.append((oid, "SUPPORTED", "role_satisfied"))
+            for s, _ in found:
+                supplying[s["id"]] = s
+    for c in profile.get("coherence", []):
+        oid = f"coherence:{c['id']}"
+        if not supplying:
+            out.append((oid, "INSUFFICIENT_EVIDENCE", "not_executed_no_role_satisfied"))
+            continue
+        vals, missing = [], 0
+        for s in supplying.values():
+            hit = [f for f in s["facts"] if f["key"] == c["fact"]]
+            if len(hit) == 1:
+                vals.append(json.dumps(verified(s, hit[0])["value"], sort_keys=True))
+            else:
+                missing += 1
+        out.append((oid, "INSUFFICIENT_EVIDENCE", "generation_unstated") if missing else
+                   (oid, "CONTRADICTED", "sources_from_different_generations") if len(set(vals)) > 1 else (oid, "SUPPORTED", "sources_coherent"))
+    lc = profile.get("lifecycle")
+    if lc:
+        out.extend(_lifecycle_check(lc, usable, files, arts))
+    verdicts = [v for _, v, _ in out]
+    overall = ("CONTRADICTED" if "CONTRADICTED" in verdicts else "INVALID_EVIDENCE" if "INVALID_EVIDENCE" in verdicts
+               else "SUPPORTED" if verdicts and all(v == "SUPPORTED" for v in verdicts) else "INSUFFICIENT_EVIDENCE")
+    return overall, out
+
+
+def _lifecycle_check(lc, usable, files, arts):
+    pat = re.compile(r"^" + re.escape(lc["history"]) + r"\[(\d+)\]\.(stage|seq|clock)$")
+    events, bad = [], False
+    for s in usable:
+        idx = {}
+        for f in s["facts"]:
+            m = pat.match(f["key"])
+            if m:
+                idx.setdefault(int(m.group(1)), {})[m.group(2)] = _verify_fact_ret(files, arts, s, f)
+        for i, p in idx.items():
+            if set(p) == {"stage", "seq", "clock"} and p["seq"]["kind"] == "integer" and p["stage"]["kind"] == "string" and p["clock"]["kind"] == "string":
+                events.append((p["stage"]["value"], int(p["seq"]["value"]), p["clock"]["value"]))
+            else:
+                bad = True
+    if bad:
+        return [("lifecycle:records", "INVALID_EVIDENCE", "malformed_lifecycle_record")]
+    slots = {}
+    for st, q, c in events:
+        if (c, q) in slots and slots[(c, q)] != st:
+            return [("lifecycle:records", "INVALID_EVIDENCE", "duplicate_lifecycle_entry")]
+        slots[(c, q)] = st
+    have = {e[0] for e in events}
+    req, need, todo = lc.get("requires", {}), set(), [lc["target"]]
+    while todo:
+        n = todo.pop()
+        for m in req.get(n, []):
+            if m not in need:
+                need.add(m)
+                todo.append(m)
+    if sorted(x for x in need | {lc["target"]} if x not in have):
+        return [("lifecycle:prerequisites", "INSUFFICIENT_EVIDENCE", "prerequisite_missing")]
+    out = [("lifecycle:prerequisites", "SUPPORTED", "prerequisites_recorded")]
+    tgt = [e for e in events if e[0] == lc["target"]]
+    inv = [e for e in events if e[0] in set(lc.get("invalidating", []))]
+    if not inv:
+        return out + [("lifecycle:current_validity", "SUPPORTED", "no_invalidation_recorded")]
+    cross = any(t[2] != i[2] for t in tgt for i in inv)
+    later = any(t[2] == i[2] and i[1] > t[1] for t in tgt for i in inv)
+    all_earlier = all(t[2] == i[2] and i[1] < t[1] for t in tgt for i in inv)
+    if later and not cross:
+        return out + [("lifecycle:current_validity", "CONTRADICTED", "invalidated_after_success")]
+    if cross or not all_earlier:
+        return out + [("lifecycle:current_validity", "INSUFFICIENT_EVIDENCE", "ordering_ambiguous")]
+    return out + [("lifecycle:current_validity", "SUPPORTED", "success_after_invalidation")]
+
+
+def _verify_fact_ret(files, arts, s, f):
+    return _verify_fact(files, arts, s["rend"], f)
 
 
 def _load_records(files, arts, acts, rep):

@@ -1,0 +1,11 @@
+{
+ "meta": {
+  "generation": "g6"
+ },
+ "checkpoint": {
+  "allocator_next": 4,
+  "random_cursor": 2,
+  "operation_cursor": 8,
+  "semantics_version": "ref-store-1"
+ }
+}

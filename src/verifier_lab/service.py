@@ -20,8 +20,9 @@ from .ingestion.admit import AdmissionError, AdmissionLimits, admit, read_blob, 
 from .ingestion.common import Limits
 from .ingestion.extract import ExtractionFailure, build_record, extract_isolated
 from .model import (Activity, Artifact, Assumption, Bundle, Claim, ProfileRef, Verdict)
+from . import purposes as PU
 from . import riskpacks as RP
-from .rules import (CONTEXT_MEDIA, EXTRACT_OP, EXTRACTION_MEDIA, PROFILE_ID, PROFILE_VERSION, PROVENANCE_MEDIA,
+from .rules import (PURPOSE_BINDINGS_MEDIA, PURPOSE_MEDIA, CONTEXT_MEDIA, EXTRACT_OP, EXTRACTION_MEDIA, PROFILE_ID, PROFILE_VERSION, PROVENANCE_MEDIA,
                     RISKPACK_MEDIA, CheckContext, builtin_registry)
 from .store import Store, jdump, jload, now_iso
 
@@ -64,6 +65,7 @@ class Service:
         self.limits = limits or Limits()
         self.admission = admission or AdmissionLimits()
         self.registry = registry or builtin_registry()
+        self.purposes = PU.PurposeCatalog(self.store.root / "purposes")
         self.packs = RP.PackCatalog(self.store.root / "packs", self.registry.implemented_predicates())
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="vl-job")
         self.hooks: dict = {}
@@ -558,16 +560,31 @@ class Service:
             raise ServiceError(422, "pack_" + exc.code, str(exc))
         return next(p for p in self.list_packs() if p["pack_id"] == pack.pack_id and p["version"] == pack.version)
 
+    # ------------------------------------------------------------------ purpose profiles
+    def list_purposes(self) -> list[dict]:
+        return [{"profile_id": p.profile_id, "version": p.version, "digest": p.content_digest, "title": p.body["title"],
+                 "description": p.body.get("description", ""),
+                 "roles": [{"role": r["role"], "description": r.get("description", ""), "min": r.get("min", 1), "max": r.get("max", 1),
+                            "value_kind": r.get("value_kind", "any"), "optional": bool(r.get("optional"))} for r in p.roles],
+                 "coherence": p.body.get("coherence", []), "lifecycle": p.body.get("lifecycle")} for p in self.purposes.list()]
+
+    def install_purpose(self, data: bytes) -> dict:
+        try:
+            p = self.purposes.install(data)
+        except PU.PurposeError as exc:
+            raise ServiceError(422, "purpose_" + exc.code, str(exc))
+        return next(x for x in self.list_purposes() if x["profile_id"] == p.profile_id and x["version"] == p.version)
+
     def start_run(self, claim_revision_ids: list[str], evidence_source_ids: list[str],
                   idempotency_key: str | None = None, pack_ids: list[str] | None = None,
-                  context: dict | None = None) -> dict:
+                  context: dict | None = None, purposes: list[dict] | None = None) -> dict:
         payload = {"claims": sorted(claim_revision_ids), "evidence": sorted(evidence_source_ids),
-                   "packs": sorted(pack_ids or []), "context": context or {}}
+                   "packs": sorted(pack_ids or []), "context": context or {}, "purposes": purposes or []}
         prior = self._idem("run", idempotency_key, payload)
         if prior is not None:
             return prior
-        if not claim_revision_ids or not evidence_source_ids:
-            raise ServiceError(422, "empty_selection", "choose at least one claim revision and one evidence source")
+        if not evidence_source_ids or not (claim_revision_ids or purposes):
+            raise ServiceError(422, "empty_selection", "choose evidence and at least one claim revision or purpose")
         revs = []
         for rid in sorted(set(claim_revision_ids)):
             row = self.store.q1("SELECT * FROM claim_revisions WHERE id=?", (rid,))
@@ -590,21 +607,29 @@ class Service:
             facts = RP.check_facts(context or {})
         except RP.PackError as exc:
             raise ServiceError(422, "pack_" + exc.code, str(exc))
+        purpose_reqs = []
+        try:
+            for req in purposes or []:
+                prof = self.purposes.get(req["profile_id"], req.get("version"))
+                purpose_reqs.append((prof, PU.check_bindings(prof, req.get("bindings", {}))))
+        except (PU.PurposeError, KeyError, TypeError) as exc:
+            raise ServiceError(422, "purpose_" + getattr(exc, "code", "bad_request"), str(exc))
         deps = {"claim_revisions": [r["id"] for r in revs], "evidence": evidence,
                 "packs": {p.pack_id: p.content_digest for p in packs}, "context_digest": RP.context_digest(facts),
+                "purposes": [{"ref": pr.ref(), "bindings_digest": sha256_digest(canonical_bytes(b))} for pr, b in purpose_reqs],
                 "origins": {r["id"]: jload(r["body_json"])["origin"]["attempt_id"] for r in revs},
                 "profile_digest": self.registry.profile_digest()}
         seq = self.store.next_seq("run")
         run_id = record_id("run", {"deps": deps, "seq": seq})
         self.store.x("INSERT INTO runs(id,job_id,state,input_json,deps_json,created_seq,created_at) VALUES(?,?,?,?,?,?,?)",
                      (run_id, "", "QUEUED", jdump(payload), jdump(deps), seq, now_iso()))
-        job_id = self._submit("run", {"run_id": run_id}, lambda ctx: self._run_job_fn(ctx, run_id, revs, evidence, packs, facts))
+        job_id = self._submit("run", {"run_id": run_id}, lambda ctx: self._run_job_fn(ctx, run_id, revs, evidence, packs, facts, purpose_reqs))
         self.store.x("UPDATE runs SET job_id=? WHERE id=?", (job_id, run_id))
         out = {"job_id": job_id, "run_id": run_id, "events_url": f"/api/v1/jobs/{job_id}/events"}
         self._idem_store("run", idempotency_key, payload, out)
         return out
 
-    def _compile(self, revs, evidence: dict[str, str], packs=(), facts=None):
+    def _compile(self, revs, evidence: dict[str, str], packs=(), facts=None, purpose_reqs=()):
         blobs: dict[str, bytes] = {}
         artifacts: dict[str, Artifact] = {}
         activities: dict[str, Activity] = {}
@@ -675,14 +700,26 @@ class Service:
                 add_blob(canonical_bytes(pk.body), RISKPACK_MEDIA)
                 profiles.append(ProfileRef(pk.pack_id, pk.version, pk.content_digest))
             add_blob(canonical_bytes(facts or {}), CONTEXT_MEDIA)
+        ev_sources = []
+        for sid, aid in evidence.items():
+            rec, src_art, _ = record_cache[aid]
+            names = self._source_row(sid)["display_name"]
+            rend_art = next((a for a in artifacts.values() if a.digest == rec["rendition_digest"]), None)
+            ev_sources.append({"artifact_id": src_art.id, "name": names, "coverage": rec["coverage"]["summary"], "facts": rec["facts"],
+                               "blocked_keys": rec["blocked_keys"], "rendition_artifact_id": rend_art.id if rend_art else None})
+        for prof, binds in purpose_reqs:
+            add_blob(canonical_bytes(prof.body), PURPOSE_MEDIA)
+            add_blob(canonical_bytes({"profile": prof.ref(), "bindings": binds,
+                                      "evidence_sources": sorted(e["artifact_id"] for e in ev_sources)}), PURPOSE_BINDINGS_MEDIA)
+            profiles.append(ProfileRef(prof.profile_id, prof.version, prof.content_digest))
         bundle = Bundle.build(artifacts.values(), claims, activities.values(), assumptions.values(), profiles)
-        return bundle, blobs, claim_index
+        return bundle, blobs, claim_index, ev_sources
 
-    def _run_job_fn(self, ctx: JobContext, run_id: str, revs, evidence: dict[str, str], packs=(), facts=None) -> dict:
+    def _run_job_fn(self, ctx: JobContext, run_id: str, revs, evidence: dict[str, str], packs=(), facts=None, purpose_reqs=()) -> dict:
         started = time.monotonic()
         self.store.x("UPDATE runs SET state='RUNNING' WHERE id=?", (run_id,))
         ctx.progress("compiling")
-        bundle, blobs, claim_index = self._compile(revs, evidence, packs, facts)
+        bundle, blobs, claim_index, ev_sources = self._compile(revs, evidence, packs, facts, purpose_reqs)
 
         def reader(art: Artifact) -> bytes:
             data = blobs[art.digest]
@@ -728,6 +765,10 @@ class Service:
             result["limitations"] = LIMITATIONS + [
                 "Risk-pack results are evidence assessments under the declared pack, context facts and rules; "
                 "they are not legal, safety or compliance certification."]
+        if purpose_reqs:
+            result["purposes"] = [PU.evaluate_purpose(pr, b, ev_sources) for pr, b in purpose_reqs]
+            result["limitations"] = result["limitations"] + [
+                "A purpose assessment states what the supplied evidence suffices for; it is never a claim that a package is simply 'complete'."]
         meta = {"tool": "verifier-lab", "tool_version": __version__, "runtime": runtime_identity(),
                 "elapsed_seconds": round(time.monotonic() - started, 3), "created_at": now_iso(),
                 "note": "observation metadata; not part of the semantic result identity"}
@@ -760,6 +801,9 @@ class Service:
                     causes.append({"kind": "origin_reextracted", "id": cand["source_id"]})
                 elif s and s["superseded_by"]:
                     causes.append({"kind": "origin_superseded", "id": cand["source_id"], "by": s["superseded_by"]})
+        for pr in deps.get("purposes", []):
+            if not any(p.content_digest == pr["ref"]["digest"] for p in self.purposes.list()):
+                causes.append({"kind": "purpose_profile_no_longer_installed", "id": pr["ref"]["profile_id"]})
         for pid, digest in deps.get("packs", {}).items():
             try:
                 if self.packs.get(pid).content_digest != digest and not any(
@@ -790,11 +834,18 @@ class Service:
             view["errors"] = result["errors"]
             view["completion"] = result["completion"]
             view["obligations"] = result.get("obligations", [])
+            view["purposes"] = [{**p, "newer_version": self._newer_purpose(p["profile"])} for p in result.get("purposes", [])]
             view["risk_packs"] = result.get("risk_packs", [])
             view["context"] = json.loads(bundle_context) if (bundle_context := self._context_text(row)) else {}
         elif row["state"] == "FAILED":
             view["errors"] = (jload(row["summary_json"]) or {}).get("errors", [])
         return view
+
+    def _newer_purpose(self, ref: dict):
+        try:
+            return self.purposes.newer_than(ref["profile_id"], ref["profile_version"])
+        except PU.PurposeError:
+            return None
 
     def _context_text(self, row) -> str | None:
         """Context facts are stored as an artifact in the pinned package."""

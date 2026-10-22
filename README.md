@@ -64,6 +64,8 @@ evidence. Duplicate keys are never resolved by "last one wins".
   each obligation reports its applicability, the facts it used and a proposed next step. `verifier-lab pack list|validate|install|diff`.
 * **Experiments** — *Advanced* page / `verifier-lab experiment checkpoint|crash`: a three-way (continuous / resumed / replayed) comparison
   on a fictional key-value store with deliberately injectable defects, and exhaustive crash-boundary enumeration on a virtual store.
+* **Purposes** — *Run → Purpose*: is this evidence enough for *inspecting*, for *resuming exactly*? Roles are bound by fact key, generations must agree,
+  lifecycle history must be recorded; each obligation keeps its own verdict and says what could resolve it. Fixtures: `fixtures/purposes/`.
 * **Campaigns** — *Advanced → Campaigns* / `verifier-lab campaign run|verify`: mutation operators and metamorphic relations against hand-written cases with
   pre-committed answers, plus deliberately broken verifiers as negative controls. The independent report checker rejects forged totals and hidden failures.
 * **Your own program** — `verifier-lab experiment checkpoint --subject-cmd "python3 examples/reference_subject.py"`; command-line only, never over the web API.
@@ -93,7 +95,7 @@ docs/                                   # status, package format, security model
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .          # 263 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
+python -m unittest discover -s tests -t .          # 297 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
 # Browser journey (needs Playwright + Chromium; not part of unittest):
 verifier-lab --workspace /tmp/ws serve --port 8765 &
 WORKBENCH_URL=http://127.0.0.1:8765/ node tests/e2e/browser_journey.cjs

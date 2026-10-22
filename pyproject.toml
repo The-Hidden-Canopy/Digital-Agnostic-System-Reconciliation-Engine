@@ -19,4 +19,4 @@ verifier-lab = "verifier_lab.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-verifier_lab = ["web/*", "riskpacks_data/*.json"]
+verifier_lab = ["web/*", "riskpacks_data/*.json", "purposes_data/*.json"]
