@@ -1,0 +1,2 @@
+# Optional PDF parser used by release acceptance, not a mandatory core dependency.
+pypdf==6.21.2 --hash=sha256:1d44d1a3a200f25062adff0085b02040e4646431ac2ccac22e42679e91466084

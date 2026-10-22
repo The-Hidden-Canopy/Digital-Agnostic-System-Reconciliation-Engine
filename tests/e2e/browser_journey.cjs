@@ -168,7 +168,40 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.waitForSelector('.notice.ok');
   assert.ok((await page.innerText('main')).includes('unresolved, not verified'));
 
-  // 5. export + independent checker
+  // 4g. PDF follows the same review/run path; image-only pages stay visibly partial.
+  await page.goto(BASE + '#/import');
+  await page.setInputFiles('#files', FIX + 'ops-note.pdf');
+  await page.click('button[type=submit]');
+  await page.waitForFunction(() => {
+    const row = [...document.querySelectorAll('tbody tr')].find((r) => r.innerText.includes('ops-note.pdf'));
+    return row && row.innerText.includes('PARTIALLY_PARSED');
+  }, null, { timeout: 30000 });
+  await page.goto(BASE + '#/review');
+  await page.selectOption('#f-st', 'PENDING');
+  await page.fill('#f-q', 'limits.max_upload_kb');
+  await page.dispatchEvent('#f-q', 'change');
+  await page.locator('.list li', { hasText: 'ops-note.pdf' }).locator('button.item').click();
+  await page.waitForSelector('#cand-h');
+  assert.strictEqual(await page.textContent('mark'), '150');
+  await page.click('button:has-text("Record decision")');
+  await page.waitForFunction(() => ![...document.querySelectorAll('.list li')].some((r) => r.innerText.includes('ops-note.pdf')));
+  await page.goto(BASE + '#/run');
+  await page.waitForSelector('summary:has-text("Risk packs")');
+  const checked = page.locator('main input[type=checkbox]:checked');
+  while (await checked.count()) await checked.first().uncheck();
+  await page.locator('li', { hasText: 'limits.max_upload_kb fact.equals 150' }).locator('input').check();
+  await page.locator('li', { hasText: 'service-config.json' }).locator('input').check();
+  await page.click('button:has-text("Start run")');
+  await page.waitForSelector('text=Open findings', { timeout: 60000 });
+  await page.click('text=Open findings >> nth=0');
+  await page.waitForSelector('table tbody tr');
+  assert.strictEqual(await page.locator('table tbody tr').count(), 1);
+  assert.ok((await page.innerText('table tbody')).includes('Contradicted'));
+  await page.locator('tr', { hasText: 'limits.max_upload_kb' }).locator('a:has-text("Inspect")').click();
+  await page.waitForSelector('#f-h');
+  assert.strictEqual(await page.textContent('#fdetail mark'), '200');
+
+  // 5. export the PDF-backed claim + independent checker
   await page.goto(BASE + '#/export');
   const [download] = await Promise.all([page.waitForEvent('download'), page.click('button:has-text("Download package")')]);
   assert.ok((await download.suggestedFilename()).endsWith('.zip'));

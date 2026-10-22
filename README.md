@@ -107,11 +107,15 @@ docs/                                   # status, package format, security model
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .          # 337 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
+python -m unittest discover -s tests -t .          # install the `pdf` extra (pypdf) first, the PDF cases need it
 # Browser journey (needs Playwright + Chromium; not part of unittest):
 verifier-lab --workspace /tmp/ws serve --port 8765 &
 WORKBENCH_URL=http://127.0.0.1:8765/ node tests/e2e/browser_journey.cjs
 ```
+
+For two clean wheel builds, package-content checks and isolated installed-wheel acceptance,
+see [release checks](docs/RELEASE.md). The [build progress assessment](docs/BUILD_PROGRESS.md)
+maps the implementation to the docuseries and records the remaining release gates.
 
 ## Security model (short)
 

@@ -1,8 +1,9 @@
 # Status: what is built, what was run, what is not built
 
-Baseline: design docuseries dated 2026-10-21. This tree implements **increment one** of chapter 13 (a complete narrow
-vertical slice). "Tested" below means an automated test in this repository that was actually run; the exact
-counts are in the README. Anything not listed as tested is untested.
+Baseline: design docuseries dated 2026-10-21. The narrow vertical slice and eight subsequent increments
+implement much of the generic laboratory; the full docuseries and release review are not complete.
+See [BUILD_PROGRESS.md](BUILD_PROGRESS.md) for the chapter-by-chapter assessment and remaining work.
+"Tested" below means an automated check actually run, not a design acceptance claim.
 
 ## Implemented and tested
 
@@ -112,6 +113,18 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 * `docs/FORMATS.md`: written specification of risk packs, purpose profiles, pipeline descriptions, campaign manifests/reports, counterexample packages and both program protocols
   (the Open Canopy contract asks that important formats be documented).
 
+## Added in increment nine (chapter 12, release hardening)
+
+* `tools/check_release.py`: two isolated wheel builds with pinned, hash-verified Python build inputs,
+  deterministic timestamps and matching artifact hashes; package-content allowlist and negative tests;
+  fresh offline wheel installation outside the checkout, four-format CLI acceptance and independent export checking.
+* Installed UI startup/assets and optional Chromium journey. PDF now travels through the browser's
+  import, partial-coverage display, review, check, contradiction and independently verified export path.
+* `.github/workflows/ci.yml`: full Python suite and installed-wheel browser/release gates on Linux/Python 3.12.
+  The workflow has been added; a remote CI run is not implied by local validation.
+* [RELEASE.md](RELEASE.md): commands, dependency inventory and evidence limits. The helper records source-input,
+  dependency and artifact hashes and dirty source state; it does not publish or sign anything.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -126,22 +139,24 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 
 ## Not built yet (explicitly out of this increment)
 
- mutation/metamorphic campaigns and campaign reports (09, most of 10),
-the EU/US/China/Australia packs (14, 15) — **no jurisdiction content exists
-here**; OCR; signatures and trust anchors; model-assisted suggestions; manual creation of claims from free prose;
-manual claim editing beyond the three predicates; dependency-graph and temporal-replay views; multi-project support.
+The EU/US/China/Australia packs (14, 15) — **no jurisdiction pack ships here**; OCR; signatures and trust anchors;
+model-assisted suggestions; manual creation of claims from free prose; broader claim predicate editing;
+temporal-replay and general dependency-graph views; multi-project support; additional synthetic stateful systems.
+Campaigns, replay and reduction are implemented as described above, with their stated scope limits.
 
 ## Release gates (README of the docuseries) — honest state
 
-1. UI + CLI acceptance on all four formats — **partial**: all four formats run in tests; the browser journey covers
-   Markdown/JSON/SQL; PDF is exercised through the service-level tests only (not through the browser, HTTP or CLI tests).
-2. Controls, checker disagreement, replay, reduction — **partial**: positive/negative controls and the checker exist;
-   replay and reduction do not.
+1. UI + CLI acceptance on all four formats — **implemented for the narrow tutorial scope**: the release helper
+   exercises all four from an installed wheel; the browser journey includes PDF review and export.
+2. Controls, checker disagreement, replay, reduction — **implemented within the documented scope**: positive/negative
+   controls, independent checker tamper tests, three-way KV replay and fresh-process reduced reproducer verification.
+   This does not establish the broader multi-system laboratory milestone.
 3. Hostile files / no execution / no fetching — **partial**: covered for the implemented adapters; no fuzzing campaign yet.
 4. Reproducible export, immutable source refs, change-triggered invalidation — **done for this slice** (cross-workspace
    byte-identical packages except observation metadata; staleness tests).
 5. Jurisdiction review — **not started**.
 6. Accessibility, recovery, clean-machine install, license review — **partial**: keyboard path, skip link, focus handling,
    `aria-live` status and non-colour verdict labels are in place and smoke-tested; **no screen-reader or automated audit
-   was run**; a wheel was installed and exercised in one fresh virtualenv on one platform; **no dependency/license review**.
+   was run**; repeatable installed-wheel acceptance and build comparison are available for Linux/Python 3.12;
+   a dependency metadata inventory exists, but **full dependency/provenance/license review remains open**.
 7. Owner review before publication — **pending**.
