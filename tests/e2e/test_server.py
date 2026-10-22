@@ -219,3 +219,11 @@ def canonical_pack() -> bytes:
                              "rule_ref": {"rule_id": "rule.fact_equals", "version": "1"}}]}
     from verifier_lab.canonical import canonical_bytes
     return canonical_bytes(RP.seal(body))
+
+
+class NoCommandsOverHttp(ServerCase):
+    def test_experiment_endpoints_refuse_to_run_a_program(self):
+        for key in ("subject_cmd", "command", "subject", "executable"):
+            for ep in ("checkpoint", "minimize", "crash", "campaign"):
+                s, err, _ = self.call("POST", f"/api/v1/experiments/{ep}", {key: ["python3", "-c", "print(1)"], "defects": ["reset_next_id"]})
+                self.assertEqual((s, err["error"]["code"]), (422, "commands_not_accepted_over_http"), (key, ep))

@@ -34,14 +34,26 @@ def _experiments(args) -> int:
     from .reducers.sequence import DeleteTransactionMembers, DeleteUnits
     from .reducers.values import SimplifyValues
     from .subjects.candidate_store import DEFECTS
+    import shlex
+    from .subjects.external import ExternalFactory
+    cmd = shlex.split(args.subject_cmd) if getattr(args, "subject_cmd", None) else None
+    env = dict(i.partition("=")[::2] for i in getattr(args, "subject_env", []))
+    factory = ExternalFactory(cmd, env=env) if cmd else None
+    cmd = factory.command if factory else None       # file arguments resolved to absolute paths before any child process starts
     if args.cmd == "verify-counterexample":
-        res = verify_package_fresh_process(Path(args.package))
+        res = verify_package_fresh_process(Path(args.package), command=cmd, env=env)
         _out(res)
         return OK if res["status"] == "VERIFIED" else REJECTED
     if args.cmd == "experiment" and args.kind == "crash":
         res = crash_mod.crash_experiment(args.writer_defect, tuple(args.defect), args.max_positions)
         _out(res.to_dict())
         return OK if res.passed else ATTENTION
+    if factory and args.defect:
+        _err("--defect only applies to the built-in candidate")
+        return INVALID
+    if args.cmd == "minimize" and not factory and not args.defect:
+        _err("minimize needs --defect (built-in) or --subject-cmd")
+        return INVALID
     bad = [d for d in args.defect if d not in DEFECTS]
     if bad:
         _err(f"unknown defect(s) {bad}; known: {list(DEFECTS)}")
@@ -50,22 +62,22 @@ def _experiments(args) -> int:
     boundary = args.ops // 2 if args.boundary is None else args.boundary
     case = ExperimentCase(args.seed, tuple(ops), boundary, tuple(args.defect))
     if args.cmd == "experiment":
-        res = run_experiment(case)
-        _out({"case": case.identity(), **res.to_dict()})
+        res = run_experiment(case, factory)
+        _out({"case": case.identity(), "subject": factory.identity if factory else "builtin", **res.to_dict()})
         return OK if res.passed else ATTENTION
     out = Path(args.output)
     if out.exists():
         _err(f"refusing to overwrite {out}")
         return INVALID
     reducers = [DeleteUnits(), DeleteTransactionMembers(), SimplifyValues()]
-    result = minimize(case, CheckpointOracle(), reducers, ReductionBudget(max_oracle_calls=args.max_oracle_calls))
+    result = minimize(case, CheckpointOracle(factory=factory), reducers, ReductionBudget(max_oracle_calls=args.max_oracle_calls))
     if result.status in ("NOT_REPRODUCED", "UNSTABLE"):
         _err(f"nothing to minimize: {result.stop_reason}")
         _out({"status": result.status, "reproduction_outcomes": result.reproduction_outcomes})
         return INVALID
-    pkg = build_package(result, reducers)
+    pkg = build_package(result, reducers, factory)
     write_package(pkg, out)
-    verdict = verify_package_fresh_process(out)
+    verdict = verify_package_fresh_process(out, command=cmd, env=env)
     _out({"status": result.status, "original_units": len(case.ops), "reduced_units": len(result.best.ops),
           "oracle_calls": result.oracle_calls, "scope": pkg["reduction"]["scope"],
           "fresh_process_verification": verdict["status"], "package": str(out)})
@@ -172,11 +184,15 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--defect", action="append", default=[], help="inject a named defect (positive control)")
     s.add_argument("--writer-defect", default=None)
     s.add_argument("--max-positions", type=int, default=None)
+    s.add_argument("--subject-cmd", help="run your own subject program (JSON-lines protocol) instead of the built-in candidate")
+    s.add_argument("--subject-env", action="append", default=[], metavar="KEY=VALUE", help="environment passed to the subject (its identity includes it)")
     s = sub.add_parser("minimize", help="reduce a failing checkpoint experiment to a small verified reproducer")
     s.add_argument("--seed", default="seed-1")
     s.add_argument("--ops", type=int, default=120)
     s.add_argument("--boundary", type=int, default=None)
-    s.add_argument("--defect", action="append", required=True)
+    s.add_argument("--defect", action="append", default=[])
+    s.add_argument("--subject-cmd", help="minimize a failure of your own subject program")
+    s.add_argument("--subject-env", action="append", default=[], metavar="KEY=VALUE")
     s.add_argument("--max-oracle-calls", type=int, default=3000)
     s.add_argument("--output", required=True)
     s = sub.add_parser("campaign", help="run a mutation/metamorphic campaign, or verify a campaign report")
@@ -190,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--trusted-manifest-digest", help="digest from a trusted channel; without it the conclusion is narrower")
     s = sub.add_parser("verify-counterexample", help="reproduce a counterexample package in a fresh process")
     s.add_argument("package")
+    s.add_argument("--subject-cmd", help="required for packages that name an external subject; its identity must match")
+    s.add_argument("--subject-env", action="append", default=[], metavar="KEY=VALUE")
     s = sub.add_parser("validate", help="structurally validate a bundle.json")
     s.add_argument("bundle")
     args = ap.parse_args(argv)

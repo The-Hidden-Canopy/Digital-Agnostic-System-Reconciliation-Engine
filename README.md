@@ -66,6 +66,7 @@ evidence. Duplicate keys are never resolved by "last one wins".
   on a fictional key-value store with deliberately injectable defects, and exhaustive crash-boundary enumeration on a virtual store.
 * **Campaigns** — *Advanced → Campaigns* / `verifier-lab campaign run|verify`: mutation operators and metamorphic relations against hand-written cases with
   pre-committed answers, plus deliberately broken verifiers as negative controls. The independent report checker rejects forged totals and hidden failures.
+* **Your own program** — `verifier-lab experiment checkpoint --subject-cmd "python3 examples/reference_subject.py"`; command-line only, never over the web API.
 * **Minimization** — `verifier-lab minimize --defect reset_next_id --output case.json` shrinks a failing history to a small reproducer and
   `verifier-lab verify-counterexample case.json` reproduces it in a fresh process. The scope statement says which operators were exhausted.
 
@@ -92,7 +93,7 @@ docs/                                   # status, package format, security model
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .          # 247 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
+python -m unittest discover -s tests -t .          # 263 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
 # Browser journey (needs Playwright + Chromium; not part of unittest):
 verifier-lab --workspace /tmp/ws serve --port 8765 &
 WORKBENCH_URL=http://127.0.0.1:8765/ node tests/e2e/browser_journey.cjs

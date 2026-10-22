@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,15 +21,18 @@ class CheckpointOracle:
     """Failure oracle for ExperimentCase. Identity pins the reference semantics and runner version."""
     identity = f"checkpoint-experiment/1+{SEMANTICS_VERSION}"
 
-    def __init__(self, signature: FailureSignature | None = None):
+    def __init__(self, signature: FailureSignature | None = None, factory=None):
         self._sig = signature
+        self.factory = factory                  # None: the built-in candidate; else an ExternalFactory
+        if factory is not None:
+            self.identity = f"{CheckpointOracle.identity}+subject:{factory.identity}"   # a cached result from another program is invalid
 
     def bind(self, signature: FailureSignature) -> None:
         self._sig = signature
 
     def signature_of(self, case: ExperimentCase) -> FailureSignature | None:
         try:
-            res = run_experiment(case)
+            res = run_experiment(case, self.factory)
         except Exception:
             return None
         if res.errors or not res.divergences:
@@ -39,8 +43,10 @@ class CheckpointOracle:
                                 f"{d.path}:{field_class(d.field)}")
 
     def evaluate(self, case: ExperimentCase) -> OracleOutcome:
-        res = run_experiment(case)
+        res = run_experiment(case, self.factory)
         if res.errors:
+            if any(e["code"].startswith("subject_") for e in res.errors):
+                raise RuntimeError(res.errors[0]["code"])       # operational: the minimizer never caches or accepts it
             return OracleOutcome.INVALID_CANDIDATE
         if not res.divergences:
             return OracleOutcome.NO_FAILURE
@@ -59,14 +65,17 @@ class LaxOracle(CheckpointOracle):
         return OracleOutcome.NO_FAILURE if not res.divergences else OracleOutcome.SAME_FAILURE
 
 
-def build_package(result: ReductionResult, reducers: list[Reducer]) -> dict:
-    final = run_experiment(result.best)
+def build_package(result: ReductionResult, reducers: list[Reducer], factory=None) -> dict:
+    final = run_experiment(result.best, factory)
+    subject = ({"kind": "builtin"} if factory is None else
+               {"kind": "external", "identity": factory.identity,
+                "note": "informational only: a command is never read from a package or executed by verification"})
     body = {"schema": PACKAGE_SCHEMA, "kind": "checkpoint_experiment",
             "status": result.status, "signature": result.signature.to_dict() if result.signature else None,
             "original": {"identity": result.original.identity(), "case": result.original.to_dict()},
             "reduced": {"identity": result.best.identity(), "case": result.best.to_dict()},
             "witness": final.first().to_dict() if final.first() else None,
-            "runner": {"semantics_version": SEMANTICS_VERSION, "oracle": CheckpointOracle.identity},
+            "runner": {"semantics_version": SEMANTICS_VERSION, "oracle": CheckpointOracle.identity, "subject": subject},
             "reduction": {"oracle_calls": result.oracle_calls, "cache_hits": result.cache_hits,
                           "stop_reason": result.stop_reason, "exhausted_reducers": result.exhausted_reducers,
                           "scope": result.scope_statement(reducers), "log": result.log},
@@ -80,7 +89,7 @@ def write_package(pkg: dict, path: Path) -> None:
     path.write_bytes(canonical_bytes(pkg))
 
 
-def verify_in_process(pkg: dict) -> dict:
+def verify_in_process(pkg: dict, factory=None) -> dict:
     """Re-evaluate the witness from the stored case alone; never trusts the reducer's assertions."""
     checks = []
 
@@ -100,9 +109,20 @@ def verify_in_process(pkg: dict) -> dict:
           f"{pkg['runner']['semantics_version']} vs {SEMANTICS_VERSION}")
     sig = FailureSignature.from_dict(pkg["signature"]) if pkg.get("signature") else None
     check("signature_recorded", sig is not None)
+    subject = pkg["runner"].get("subject", {"kind": "builtin"})
+    if subject["kind"] == "external":
+        supplied = factory is not None and factory.identity == subject["identity"]
+        check("subject_supplied_by_caller", supplied,
+              "this package names an external subject; verification runs only a program the caller supplies, "
+              "and its identity must equal the recorded one" if not supplied else "")
+        if not supplied:
+            return {"status": "REJECTED", "checks": checks}
+    elif factory is not None:
+        check("subject_matches_package", False, "package was produced by the built-in subject")
+        return {"status": "REJECTED", "checks": checks}
     if sig:
-        res = run_experiment(case)
-        orc = CheckpointOracle()
+        res = run_experiment(case, factory)
+        orc = CheckpointOracle(factory=factory)
         actual = orc.signature_of(case)
         check("reduced_case_fails_with_same_signature", actual == sig, f"actual={actual and actual.to_dict()}")
         check("witness_reproduces", bool(res.first()) and res.first().to_dict() == pkg.get("witness"))
@@ -115,16 +135,20 @@ def verify_in_process(pkg: dict) -> dict:
 _BOOT = ("import sys, json; sys.path.insert(0, sys.argv[1]);"
          "from verifier_lab.experiments.package import verify_in_process;"
          "from verifier_lab.canonical import strict_loads;"
-         "out = verify_in_process(strict_loads(open(sys.argv[2], 'rb').read(), max_bytes=64_000_000));"
+         "from verifier_lab.subjects.external import ExternalFactory;"
+         "cmd = json.loads(sys.argv[3]) if len(sys.argv) > 3 else None; env = json.loads(sys.argv[4]) if len(sys.argv) > 4 else {};"
+         "out = verify_in_process(strict_loads(open(sys.argv[2], 'rb').read(), max_bytes=64_000_000), ExternalFactory(cmd, env=env) if cmd else None);"
          "print(json.dumps(out))")
 
 
-def verify_package_fresh_process(path: Path, timeout: float = 120.0) -> dict:
+def verify_package_fresh_process(path: Path, timeout: float = 120.0, command: list[str] | None = None,
+                                 env: dict | None = None) -> dict:
     """Run verification in a new interpreter that shares no memory with the reducer."""
     root = str(Path(__file__).resolve().parents[2])
     with tempfile.TemporaryDirectory(prefix="vl-verify-") as cwd:
-        proc = subprocess.run([sys.executable, "-E", "-s", "-c", _BOOT, root, str(Path(path).resolve())], cwd=cwd,
-                              capture_output=True, text=True, timeout=timeout, env={"PATH": ""})
+        argv = [sys.executable, "-E", "-s", "-c", _BOOT, root, str(Path(path).resolve())] + ([json.dumps(command), json.dumps(env or {})] if command else [])
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                              env={"PATH": os.environ.get("PATH", "") if command else ""})
     if proc.returncode != 0:
         return {"status": "REJECTED", "checks": [{"name": "verifier_process", "ok": False, "detail": proc.stderr[-300:]}]}
     return json.loads(proc.stdout)

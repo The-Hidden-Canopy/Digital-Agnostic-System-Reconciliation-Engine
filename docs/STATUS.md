@@ -67,6 +67,17 @@ evidence instead of `INVALID_EVIDENCE`); it is fixed and has a regression test. 
 detection ratio is reported with its denominator and is not a safety score. Not built: user-authored relations, automated
 shrinking of campaign failures through the minimizer, bundle-level (rather than scenario-level) mutation of exported packages.
 
+## Added in increment five (chapter 05, subject adapters)
+
+| Area | Implemented | Evidence |
+|---|---|---|
+| Subject adapter | `subjects/external.py`: JSON-lines protocol (`init/apply/snapshot/load` + optional `replay`) to a user-supplied program; a fresh process per instance; empty working directory, minimal environment, rlimits, per-request timeout, response size cap; crashes/hangs/protocol violations become execution errors, never divergences or passes; identity = command + file bytes + environment | `tests/unit/test_external_subject.py` |
+| CLI only | `--subject-cmd/--subject-env` on `experiment`, `minimize`, `verify-counterexample`; the HTTP API refuses any command field; a counterexample package records only the subject's identity and **never** causes a command to run - verification needs the caller to supply a program with the same identity | same; `NoCommandsOverHttp` |
+| Example | `examples/reference_subject.py`, a standalone store with optional injected defects (`SUBJECT_DEFECTS`) to start from | same |
+
+Containment is accidental-damage protection, not a sandbox for hostile code. The campaign page still judges only the built-in
+verifier kernels; pointing a campaign at an external verifier program is not built.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -82,7 +93,7 @@ shrinking of campaign failures through the minimizer, bundle-level (rather than 
 ## Not built yet (explicitly out of this increment)
 
 Purpose profiles (04), composition obligations (03), mutation/metamorphic campaigns and campaign reports (09, most of 10),
-subject adapters for user-supplied programs; the EU/US/China/Australia packs (14, 15) — **no jurisdiction content exists
+adapters that point *campaigns* at an external verifier; the EU/US/China/Australia packs (14, 15) — **no jurisdiction content exists
 here**; OCR; signatures and trust anchors; model-assisted suggestions; manual creation of claims from free prose;
 manual claim editing beyond the three predicates; dependency-graph and temporal-replay views; multi-project support.
 

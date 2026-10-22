@@ -17,6 +17,8 @@ pages in the same browser (CSRF, DNS rebinding); tampered packages.
 | Malicious or sloppy risk packs | Data-only grammar; unknown/executable-looking fields rejected; rules resolve only to the installed catalog; digest pinning; conflicting content under one identity rejected | `test_riskpacks`, `test_server::PacksAndExperiments` |
 | Resource abuse via experiment endpoints | Bounded operations/oracle calls; experiments touch only the in-memory fictional store | `PacksAndExperiments` |
 
+| Running a user-supplied subject | Only from an explicit CLI flag; HTTP API rejects command fields; packages never carry runnable commands (identity only); empty cwd, minimal env, rlimits, timeouts | `test_external_subject`, `NoCommandsOverHttp` |
+
 **Not claimed:** a hardened sandbox (no seccomp/namespaces; the guard is defence in depth, not a boundary against
 native-code exploits in a parser dependency such as pypdf); protection if another local process can read the workspace
 directory or the loopback port while it runs (the token is embedded in the served page); multi-user or remote

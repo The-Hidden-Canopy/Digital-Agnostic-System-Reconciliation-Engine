@@ -112,7 +112,23 @@ def _compare_step(result, path, idx, trans, accepted, notes, cand_state, ref_sta
     return True
 
 
-def run_experiment(case: ExperimentCase) -> ExperimentResult:
+def run_experiment(case: ExperimentCase, factory=None) -> ExperimentResult:
+    """`factory(seed, defects)` makes a fresh candidate instance; default is the built-in CandidateStore.
+    A subject that crashes or breaks the protocol yields an execution error, never a divergence or a pass."""
+    from ..subjects.external import SubjectError
+    make = factory or CandidateStore
+    try:
+        return _run(case, make)
+    except SubjectError as exc:
+        res = ExperimentResult()
+        res.errors.append({"code": exc.code if exc.code.startswith("subject_") else "subject_" + exc.code, "message": str(exc)[:300]})
+        return res
+    finally:
+        if factory is not None and hasattr(factory, "close_all"):
+            factory.close_all()
+
+
+def _run(case: ExperimentCase, make) -> ExperimentResult:
     result = ExperimentResult()
     n = len(case.ops)
     result.coverage = {"mode": "single_case", "operations": n, "boundary": case.boundary,
@@ -127,7 +143,7 @@ def run_experiment(case: ExperimentCase) -> ExperimentResult:
         return result
     defects = frozenset(case.defects)
     # path 1: continuous
-    cand = CandidateStore(case.seed, defects)
+    cand = make(case.seed, defects)
     steps = 0
     for i, op in enumerate(case.ops):
         ok, notes = cand.apply(op)
@@ -136,7 +152,7 @@ def run_experiment(case: ExperimentCase) -> ExperimentResult:
             break
     result.coverage["steps_compared_per_path"]["continuous"] = steps
     # path 2: run to the boundary, serialize the candidate's own state, restore into a fresh instance, continue
-    a = CandidateStore(case.seed, defects)
+    a = make(case.seed, defects)
     for op in case.ops[:case.boundary]:
         a.apply(op)
     d0 = state_diff(states[case.boundary], a.snapshot())
@@ -149,7 +165,7 @@ def run_experiment(case: ExperimentCase) -> ExperimentResult:
     except (PlanError, KeyError, ValueError) as exc:
         result.errors.append({"code": "checkpoint_unusable", "message": str(exc)})
         return result
-    b = CandidateStore(case.seed, defects)
+    b = make(case.seed, defects)
     b.load(restored.state)
     steps = 0
     for i in range(case.boundary, n):
@@ -166,7 +182,7 @@ def run_experiment(case: ExperimentCase) -> ExperimentResult:
     except PlanError as exc:
         result.errors.append({"code": "replay_plan_refused", "message": str(exc)})
         return result
-    c = CandidateStore(case.seed, defects)
+    c = make(case.seed, defects)
     c.load(restore_checkpoint(ref_cp.to_bytes()).state)
     steps = 0
     for k, (op, ok, notes) in enumerate(c.replay(list(plan.operations))):

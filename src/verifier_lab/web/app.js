@@ -576,6 +576,13 @@ async function viewAdvanced() {
       h("label", { for: "x-seed", text: "Seed" }), seed, h("label", { for: "x-ops", text: "Operations (0-400)" }), ops, h("label", { for: "x-defect", text: "Injected defect" }), defect,
       h("div", { class: "row", style: "margin-top:.6rem" }, h("button", { class: "primary", text: "Run three-way experiment", onclick: () => run("checkpoint", body(), showCheckpoint) }),
         h("button", { text: "Minimize the failure", onclick: () => run("minimize", body(), showMin) }))),
+    h("div", { class: "card" }, h("h2", { text: "Test your own program" }),
+      h("p", {}, "The same experiments and minimizer can run against a program you supply, speaking a small JSON-lines protocol over stdin/stdout. Because that executes software, it is configured on the command line only - this page never accepts a command, and a counterexample package never causes one to run."),
+      h("pre", { class: "src", tabIndex: 0, "aria-label": "Command line example", text: [
+        "verifier-lab experiment checkpoint --subject-cmd \"python3 examples/reference_subject.py\" --ops 120",
+        "verifier-lab minimize --subject-cmd \"python3 my_subject.py\" --output case.json",
+        "verifier-lab verify-counterexample case.json --subject-cmd \"python3 my_subject.py\"   # identity must match" ].join("\n") }),
+      h("p", { class: "muted", text: "Each instance is a fresh process with an empty working directory, a minimal environment and resource limits. That contains accidents; it is not a security boundary for hostile code. Subject crashes, hangs and protocol violations are reported as execution errors, never as divergences or passes." })),
     h("div", { class: "card" }, h("h2", { text: "Crash boundaries (virtual durable store)" }),
       h("label", { for: "c-w", text: "Writer" }), crashSel, h("label", { for: "c-r", text: "Recovery" }), crashRec,
       h("div", { class: "row", style: "margin-top:.6rem" }, crashBtn)),
