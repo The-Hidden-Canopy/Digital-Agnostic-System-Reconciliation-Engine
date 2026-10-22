@@ -1,0 +1,5 @@
+{
+  "limits": {"max_upload_kb": 200, "retries": 3},
+  "timeout": {"seconds": 2.5},
+  "region": "eu"
+}

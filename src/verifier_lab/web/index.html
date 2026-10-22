@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="vl-token" content="__TOKEN__">
+<title>Verification Workbench</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to main content</a>
+<header class="top">
+  <div class="brand"><strong>Verification Workbench</strong><span class="muted"> local · no network · nothing leaves this machine</span></div>
+  <nav aria-label="Workflow">
+    <ol class="steps" id="steps">
+      <li><a href="#/import" data-step="import"><span class="n">1</span> Import</a></li>
+      <li><a href="#/review" data-step="review"><span class="n">2</span> Review claims</a></li>
+      <li><a href="#/run" data-step="run"><span class="n">3</span> Run checks</a></li>
+      <li><a href="#/findings" data-step="findings"><span class="n">4</span> Findings</a></li>
+      <li><a href="#/export" data-step="export"><span class="n">5</span> Export</a></li>
+    </ol>
+  </nav>
+</header>
+<div id="overview" class="overview" aria-label="Project summary"></div>
+<main id="main" tabindex="-1"></main>
+<section id="tray" class="tray" aria-label="Background jobs"></section>
+<div id="live" class="sr-only" role="status" aria-live="polite"></div>
+<noscript><p>This workbench needs JavaScript. It never loads remote scripts.</p></noscript>
+<script src="/static/app.js"></script>
+</body>
+</html>
