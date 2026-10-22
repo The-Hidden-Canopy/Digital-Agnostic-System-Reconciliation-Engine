@@ -306,6 +306,10 @@ class IntervalRelation(BaseRule):
         if not g.sources:
             return _finding(claim, Verdict.INSUFFICIENT_EVIDENCE, self, "no_independent_evidence", g,
                             {"excluded_assertion_source": g.excluded_origin})
+        if not g.observations and not g.blocked and g.unusable and len(g.unusable) == len(g.sources) \
+                and all(u["coverage"] == "CORRUPT" for u in g.unusable):
+            return _finding(claim, Verdict.INVALID_EVIDENCE, self, "evidence_unreadable", g,
+                            {"searched": g.unusable})     # same rule as the fact predicates: corrupt is not "not found"
         by_key: dict[str, list] = {}
         for o in g.observations:
             by_key.setdefault(o["key"], []).append(o)

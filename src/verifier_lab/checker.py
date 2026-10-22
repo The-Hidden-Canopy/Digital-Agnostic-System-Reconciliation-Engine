@@ -584,6 +584,8 @@ def _rederive(claim, predicate, arts, records, files):
     if not sources:
         return "INSUFFICIENT_EVIDENCE", "no_independent_evidence", []
     if predicate == "interval.relation":
+        if not obs and not blocked and unusable and len(unusable) == len(sources) and all(c == "CORRUPT" for _, c in unusable):
+            return "INVALID_EVIDENCE", "evidence_unreadable", []
         return _rederive_interval(args, obs, unusable, blocked)
     if blocked and not obs:
         return "HUMAN_REVIEW_REQUIRED", "evidence_key_ambiguous", []
