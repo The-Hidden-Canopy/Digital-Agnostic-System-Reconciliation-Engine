@@ -55,7 +55,7 @@ independent checker, `4` operational failure.
 | **Verify** | `verifier-lab verify-package` is a clean-room checker (stdlib only, imports nothing from the producer). It re-hashes bytes, recomputes identities, slices each cited token out of the artifacts and **re-derives every verdict**. A producer that lies (for example an always-`SUPPORTED` rule) is rejected. |
 
 Built-in checks: `fact.equals` (exact typed equality; `2.50` equals `2.5`), `fact.numeric_bound`
-(`lt|lte|gt|gte`), `fact.present`. Absence is `INSUFFICIENT_EVIDENCE`, never a negative. An assertion is never its own
+(`lt|lte|gt|gte`), `fact.present`, and `interval.relation` (activity ordering/overlap with optional uncertainty bounds). Absence is `INSUFFICIENT_EVIDENCE`, never a negative. An assertion is never its own
 evidence. Duplicate keys are never resolved by "last one wins".
 
 ## Layout
@@ -77,7 +77,7 @@ docs/                                   # status, package format, security model
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .          # 124 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
+python -m unittest discover -s tests -t .          # 142 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
 # Browser journey (needs Playwright + Chromium; not part of unittest):
 verifier-lab --workspace /tmp/ws serve --port 8765 &
 WORKBENCH_URL=http://127.0.0.1:8765/ node tests/e2e/browser_journey.cjs

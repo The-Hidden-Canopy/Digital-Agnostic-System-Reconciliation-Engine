@@ -282,12 +282,14 @@ function decisionForm(c) {
   const exp = c.predicate.arguments.expected;
   const status = h("div", { role: "status" });
   const action = h("select", { id: "d-action" }, [["APPROVE", "Approve as proposed"], ["APPROVE_WITH_EDIT", "Edit and approve"], ["REJECT", "Reject"], ["DEFER", "Defer"]].map(([v, t]) => h("option", { value: v, text: t })));
-  const pred = h("select", { id: "e-pred" }, [["fact.equals", "equals a value"], ["fact.numeric_bound", "numeric bound"], ["fact.present", "is present"]].map(([v, t]) => h("option", { value: v, text: t })));
+  const pred = h("select", { id: "e-pred" }, [["fact.equals", "equals a value"], ["fact.numeric_bound", "numeric bound"], ["fact.present", "is present"], ["interval.relation", "interval relation between two activities"]].map(([v, t]) => h("option", { value: v, text: t })));
   const subject = h("input", { id: "e-subj", value: c.predicate.subject, size: 40 });
   const kind = h("select", { id: "e-kind" }, ["string", "integer", "decimal", "boolean", "null"].map((k) => h("option", { value: k, selected: k === exp.kind, text: k })));
   const val = h("input", { id: "e-val", value: exp.kind === "null" ? "" : String(exp.value) });
   const op = h("select", { id: "e-op" }, ["lte", "lt", "gte", "gt"].map((o) => h("option", { value: o, text: o })));
   const bound = h("input", { id: "e-bound", value: exp.kind === "integer" || exp.kind === "decimal" ? exp.value : "" });
+  const ileft = h("input", { id: "e-left" }), iright = h("input", { id: "e-right" }), icoord = h("input", { id: "e-coord", value: "seconds" });
+  const irel = h("select", { id: "e-rel" }, ["precedes", "no_overlap", "overlaps"].map((r) => h("option", { value: r, text: r })));
   const app = h("select", { id: "e-app" }, h("option", { value: "APPLICABLE", text: "Applicable (default)" }), h("option", { value: "NOT_APPLICABLE", text: "Not applicable (requires rationale and scope)" }));
   const rat = h("input", { id: "e-rat", size: 50 }), scope = h("input", { id: "e-scope", size: 50 });
   const reason = h("textarea", { id: "d-reason" });
@@ -295,11 +297,16 @@ function decisionForm(c) {
     h("label", { for: "e-pred", text: "Predicate" }), pred, h("label", { for: "e-subj", text: "Subject (fact key to look for in the evidence)" }), subject,
     h("div", { id: "e-eq" }, h("label", { for: "e-kind", text: "Expected value type" }), kind, h("label", { for: "e-val", text: "Expected value (exact; changes in scope, units, negation or dates need a reason)" }), val),
     h("div", { id: "e-nb", hidden: true }, h("label", { for: "e-op", text: "Operator" }), op, h("label", { for: "e-bound", text: "Bound (exact decimal)" }), bound),
+    h("div", { id: "e-iv", hidden: true },
+      h("p", { class: "muted", text: "Evidence must state <name>.start and <name>.end (optionally _min/_max for uncertainty) in one coordinate. Overlapping uncertainty gives insufficient evidence, never a guess." }),
+      h("label", { for: "e-left", text: "Left activity name" }), ileft, h("label", { for: "e-right", text: "Right activity name" }), iright,
+      h("label", { for: "e-rel", text: "Relation" }), irel, h("label", { for: "e-coord", text: "Shared coordinate (stated assumption, e.g. seconds since one clock)" }), icoord),
     h("label", { for: "e-app", text: "Applicability" }), app,
     h("div", { id: "e-na", hidden: true }, h("label", { for: "e-rat", text: "Rationale" }), rat, h("label", { for: "e-scope", text: "Scope of the decision" }), scope));
   const sync = () => {
     edit.hidden = action.value !== "APPROVE_WITH_EDIT";
     $("#e-eq", edit).hidden = pred.value !== "fact.equals"; $("#e-nb", edit).hidden = pred.value !== "fact.numeric_bound";
+    $("#e-iv", edit).hidden = pred.value !== "interval.relation";
     $("#e-na", edit).hidden = app.value !== "NOT_APPLICABLE";
   };
   [action, pred, app].forEach((e) => e.addEventListener("change", sync));
@@ -316,6 +323,7 @@ function decisionForm(c) {
       } else if (pred.value === "fact.numeric_bound") {
         const t = bound.value.trim(); args.op = op.value; args.bound = { kind: /^-?\d+$/.test(t) ? "integer" : "decimal", value: t };
       }
+      if (pred.value === "interval.relation") Object.assign(args, { left: ileft.value, right: iright.value, relation: irel.value, coord: icoord.value });
       if (app.value === "NOT_APPLICABLE") args.applicability = { decision: "NOT_APPLICABLE", rationale: rat.value, scope: scope.value };
       body.edit = { predicate: pred.value, subject: subject.value, arguments: args };
     }

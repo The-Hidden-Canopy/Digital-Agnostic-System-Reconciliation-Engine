@@ -21,6 +21,17 @@ counts are in the README. Anything not listed as tested is untested.
 | Workbench UI (16) | Five-step flow, coverage tables, two-pane review with highlighted evidence, bulk-approve preview, run builder, job tray with cancel, findings with evidence snippets, export + checker | `tests/e2e/browser_journey.cjs` (run manually; one Chromium) |
 | CLI (00, 12) | `import candidates approve reject check export verify-package validate serve`, exit-code contract, no overwrite | `tests/e2e/test_cli.py` |
 
+## Added in increment two (chapters 03 and 06, partial)
+
+| Area | Implemented | Evidence |
+|---|---|---|
+| Dependency graph (03) | `graph.py`: stable Kahn ordering, real cycle witnesses (not all residual nodes, bounded and flagged when truncated), missing-input closure kept separate from ordering, producer collisions, conflicting declarations, exact invalidation paths. A `graph` summary is written into every `result.json`. | `tests/unit/test_graph_temporal.py` |
+| Temporal reasoning (06) | `temporal.py`: exact-Decimal closed intervals, strict precedence, half-open positive overlap under uncertainty, logical clocks that never compare across clock ids, possibility sets, happens-before reachability. Overlap/missing data is `UNKNOWN`. | same |
+| `interval.relation` rule | Document-checkable claims (`precedes`, `no_overlap`, `overlaps`) over facts `<name>.start|end` with optional `_min/_max` uncertainty. Two durations never prove overlap; conflicting sources go to human review. Editable in the review form. | unit + `IntervalWorkflow` e2e |
+
+The independent checker does **not** yet cover `rule.interval_relation`; packages containing it verify but list it under
+`unsupported`. Composition *obligations* (tags, generations, unit conversion edges) and the cache-key scheme are not built.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -35,7 +46,7 @@ counts are in the README. Anything not listed as tested is untested.
 
 ## Not built yet (explicitly out of this increment)
 
-Replay/checkpoint experiments, temporal/interval reasoning, composition and dependency solver, purpose profiles,
+Replay/checkpoint experiments, purpose profiles, composition obligations,
 failure minimization, mutation/metamorphic campaigns and campaign reports (chapters 03–07, 09, most of 10);
 the generic risk-pack engine and the EU/US/China/Australia packs (11, 14, 15) — **no jurisdiction content exists
 here**; OCR; signatures and trust anchors; model-assisted suggestions; manual creation of claims from free prose;

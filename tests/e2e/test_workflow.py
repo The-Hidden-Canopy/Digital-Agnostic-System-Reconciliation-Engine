@@ -420,3 +420,34 @@ class Jobs(WorkspaceCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IntervalWorkflow(WorkspaceCase):
+    SPEC = b"---\nload.start: 0\nload.end: 5\nreport.start: 5\nreport.end: 9\n---\n# Schedule spec (fictional)\n"
+    LOG = b'{"load": {"start": 0, "end": 6}, "report": {"start": 5, "end": 9}}'
+
+    def test_reviewed_interval_claim_is_contradicted_with_graph_in_package(self):
+        spec, log = self.imp(self.SPEC, "sched.md"), self.imp(self.LOG, "sched-log.json")
+        c = self.cand(spec["id"], "load.end")
+        rev = self.svc.decide(c["id"], "APPROVE_WITH_EDIT", c["etag"], reason="state the intended ordering",
+                              edit={"predicate": "interval.relation", "subject": "load-before-report",
+                                    "arguments": {"left": "load", "right": "report", "relation": "precedes", "coord": "s"}}
+                              )["claim_revision_id"]
+        run = self.do_run([rev], [log["id"]])
+        f = run["findings"][0]
+        self.assertEqual((f["verdict"], f["reason_code"]), ("CONTRADICTED", "relation_violated"))
+        self.assertEqual({e["key"] for e in f["evidence_view"]}, {"load.start", "load.end", "report.start", "report.end"})
+        z = self.svc.export_run(run["id"])
+        with zipfile.ZipFile(z) as zf:
+            result = json.loads(zf.read("result.json"))
+        self.assertTrue(result["graph"]["acyclic"] and result["graph"]["closed"])
+        check = verify_package(z)
+        self.assertEqual(check["status"], "VERIFIED")
+        self.assertEqual([u["rule"] for u in check["unsupported"]], ["rule.interval_relation@1"])   # visible, not silently trusted
+
+    def test_bad_interval_edit_rejected_at_review(self):
+        spec = self.imp(self.SPEC, "sched.md")
+        c = self.cand(spec["id"], "load.end")
+        with self.assertRaises(ServiceError):
+            self.svc.decide(c["id"], "APPROVE_WITH_EDIT", c["etag"], reason="r",
+                            edit={"predicate": "interval.relation", "arguments": {"left": "x"}})

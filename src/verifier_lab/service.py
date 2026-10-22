@@ -13,6 +13,7 @@ from pathlib import Path
 from . import __version__
 from .canonical import canonical_bytes, record_id, sha256_digest
 from .engine import CheckPlan, check_claims
+from .graph import inspect_bundle
 from .export import (LIMITATIONS, render_report, runtime_identity, write_package, zip_package)
 from .ingestion import values as V
 from .ingestion.admit import AdmissionError, AdmissionLimits, admit, read_blob, store_blob
@@ -681,6 +682,8 @@ class Service:
             "findings": [f.to_dict() for f in run.findings],
             "errors": [{"claim_id": c, "error": e.to_dict()} for c, e in run.errors],
             "claims": sorted(claim_index, key=lambda c: c["claim_id"]),
+            "graph": inspect_bundle(bundle, frozenset(
+                i for act in bundle.activities if act.operation == EXTRACT_OP for i in act.inputs)).to_dict(),
             "completion": {"cancelled": False, "claims_total": run.total_claims,
                            "claims_completed": run.completed_claims},
             "limitations": LIMITATIONS}

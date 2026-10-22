@@ -92,7 +92,8 @@ class Gathered:
     excluded_origin: bool
 
 
-def _gather(ctx: CheckContext, claim: Claim) -> Gathered:
+def _gather(ctx: CheckContext, claim: Claim, keys: tuple[str, ...] | None = None) -> Gathered:
+    wanted = set(keys) if keys is not None else {claim.subject}
     prov = ctx.provenance(claim)
     origin = prov.get("origin_source_artifact_id") if isinstance(prov, dict) else None
     g = Gathered([], [], [], [], False)
@@ -115,7 +116,7 @@ def _gather(ctx: CheckContext, claim: Claim) -> Gathered:
         if summary == "PARTIALLY_PARSED":
             pass
         for f in rec["facts"]:
-            if f["key"] == claim.subject:
+            if f["key"] in wanted:
                 loc = f["locator"]
                 g.observations.append({
                     "artifact_id": ref, "rendition_artifact_id": rend, "key": f["key"],
@@ -124,7 +125,7 @@ def _gather(ctx: CheckContext, claim: Claim) -> Gathered:
                     "context_end": loc.get("context_end"), "token_digest": f["token_digest"],
                     "span_id": f["span_id"], "coverage": summary, "qualifiers": f.get("qualifiers", [])})
         for b in rec.get("blocked_keys", []):
-            if b["key"] == claim.subject:
+            if b["key"] in wanted:
                 g.blocked.append({"artifact_id": ref, "reason": b["reason"], "occurrences": b["occurrences"]})
     g.observations.sort(key=lambda o: (o["artifact_id"], o["byte_start"]))
     return g
@@ -174,8 +175,11 @@ class BaseRule:
         err = self.validate_args(claim.arguments)
         if err:
             return self.invalid(claim, err)
-        g = _gather(ctx, claim)
+        g = _gather(ctx, claim, self.keys(claim))
         return self.decide(claim, g)
+
+    def keys(self, claim: Claim) -> tuple[str, ...] | None:
+        return None                      # default: the claim subject
 
     def validate_args(self, args) -> str | None:  # pragma: no cover - overridden
         return None
@@ -275,6 +279,92 @@ class FactPresent(BaseRule):
         return _finding(claim, Verdict.SUPPORTED, self, "fact_present", g, w)
 
 
+class IntervalRelation(BaseRule):
+    """Relation between two activities whose bounds are document facts `<name>.start` / `<name>.end`,
+    optionally with uncertainty `<name>.start_min|start_max|end_min|end_max` (chapter 06). Facts are assumed to
+    share the declared coordinate (e.g. seconds since one clock); the claim states it so it stays visible."""
+    rule_id, predicate = "rule.interval_relation", "interval.relation"
+    RELATIONS = ("precedes", "no_overlap", "overlaps")
+    SUFFIXES = ("start", "end", "start_min", "start_max", "end_min", "end_max")
+
+    def validate_args(self, args):
+        ok = (not set(args) - {"left", "right", "relation", "coord", "applicability"}
+              and all(isinstance(args.get(k), str) and args[k].strip() for k in ("left", "right", "coord"))
+              and args.get("left") != args.get("right") and args.get("relation") in self.RELATIONS)
+        return None if ok else "arguments need distinct left/right names, a relation and a coordinate"
+
+    def keys(self, claim):
+        a = claim.arguments
+        return tuple(f"{n}.{x}" for n in (a["left"], a["right"]) for x in self.SUFFIXES)
+
+    def decide(self, claim, g):
+        from decimal import Decimal
+        from . import temporal as T
+        a = claim.arguments
+        if not g.sources:
+            return _finding(claim, Verdict.INSUFFICIENT_EVIDENCE, self, "no_independent_evidence", g,
+                            {"excluded_assertion_source": g.excluded_origin})
+        by_key: dict[str, list] = {}
+        for o in g.observations:
+            by_key.setdefault(o["key"], []).append(o)
+        w = {"relation": a["relation"], "coord": a["coord"], "observations": g.observations,
+             "unusable_sources": g.unusable, "blocked": g.blocked}
+        if g.blocked:
+            return _finding(claim, Verdict.HUMAN_REVIEW_REQUIRED, self, "evidence_key_ambiguous", g, w)
+
+        def bounds(name: str, which: str):
+            """(lo, hi) possible values of name.start/end, or a reason string when they cannot be established."""
+            point, lo_k, hi_k = f"{name}.{which}", f"{name}.{which}_min", f"{name}.{which}_max"
+            found = {k: by_key.get(k, []) for k in (point, lo_k, hi_k)}
+            vals = {}
+            for k, obs in found.items():
+                if len({canonical_bytes(o["value"]) for o in obs}) > 1:
+                    return "evidence_conflict"
+                if obs:
+                    if not V.is_numeric(obs[0]["value"]):
+                        return "kind_mismatch"
+                    vals[k] = V.to_decimal(obs[0]["value"])
+            lo = vals.get(lo_k, vals.get(point))
+            hi = vals.get(hi_k, vals.get(point))
+            if lo is None or hi is None:
+                return "bound_missing"
+            if lo > hi or (point in vals and not (lo <= vals[point] <= hi)):
+                return "bounds_inconsistent"
+            return (lo, hi)
+
+        parts = {}
+        for name in (a["left"], a["right"]):
+            for which in ("start", "end"):
+                r = bounds(name, which)
+                if isinstance(r, str):
+                    verdict = Verdict.INSUFFICIENT_EVIDENCE if r == "bound_missing" else (
+                        Verdict.INVALID_EVIDENCE if r == "bounds_inconsistent" else Verdict.HUMAN_REVIEW_REQUIRED)
+                    return _finding(claim, verdict, self, r, g, {**w, "needed": f"{name}.{which}"})
+                parts[(name, which)] = r
+        C = a["coord"]
+        mk = lambda n: T.Activity(T.Interval(*parts[(n, "start")], C), T.Interval(*parts[(n, "end")], C))
+        try:
+            L, R = mk(a["left"]), mk(a["right"])
+        except ValueError:
+            return _finding(claim, Verdict.INVALID_EVIDENCE, self, "bounds_inconsistent", g, w)
+        w["bounds"] = {f"{n}.{x}": T.Interval(*parts[(n, x)], C).to_dict()
+                       for n in (a["left"], a["right"]) for x in ("start", "end")}
+        rel = a["relation"]
+        if rel == "precedes":
+            res = (T.Tri.YES if L.end.hi <= R.start.lo else T.Tri.NO if L.end.lo > R.start.hi else T.Tri.UNKNOWN)
+        else:
+            ov = T.positive_overlap(L, R)
+            res = ov if rel == "overlaps" else {T.Tri.YES: T.Tri.NO, T.Tri.NO: T.Tri.YES, T.Tri.UNKNOWN: T.Tri.UNKNOWN}[ov]
+        if res == T.Tri.UNKNOWN:
+            w["needed"] = "tighter bounds or an explicit ordering/synchronisation assumption"
+            return _finding(claim, Verdict.INSUFFICIENT_EVIDENCE, self, "relation_uncertain", g, w)
+        if res == T.Tri.YES:
+            if g.unusable:
+                return _finding(claim, Verdict.HUMAN_REVIEW_REQUIRED, self, "evidence_source_unreadable", g, w)
+            return _finding(claim, Verdict.SUPPORTED, self, "relation_holds", g, w)
+        return _finding(claim, Verdict.CONTRADICTED, self, "relation_violated", g, w)
+
+
 class RuleRegistry:
     def __init__(self):
         self._rules: dict[tuple[str, str], BaseRule] = {}
@@ -301,7 +391,7 @@ class RuleRegistry:
 
 def builtin_registry() -> RuleRegistry:
     reg = RuleRegistry()
-    for rule in (FactEquals(), FactNumericBound(), FactPresent()):
+    for rule in (FactEquals(), FactNumericBound(), FactPresent(), IntervalRelation()):
         reg.register(rule)
     return reg
 
