@@ -194,7 +194,9 @@ namespace, causing parser imports to fail closed with `isolation_unavailable`. T
 therefore runs in an explicitly privileged Ubuntu 24.04 container; this supplies the *test host*
 capability for Bubblewrap/libseccomp rather than weakening the application boundary or selecting
 portable parser mode. The minimal container also needs `libsqlite3-0` because the hosted CPython
-`_sqlite3` extension dynamically links against the image's system SQLite runtime; CI verifies that
+`_sqlite3` extension dynamically links against the image's system SQLite runtime. CI uses the
+container's Ubuntu Python 3.12 in a fresh virtual environment rather than the hosted toolcache,
+so the interpreter's dynamic libraries remain available in Bubblewrap; it verifies the SQLite
 import before it starts the suite. The exact remote outcome remains CI evidence, not a
 cross-platform claim.
 
