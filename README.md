@@ -20,6 +20,11 @@ Inputs: **PDF, JSON, Markdown, SQL** (SQL is parsed, never executed). Everything
 
 ## Quick start
 
+The supported parser-isolation target is Linux with Python 3.12+, Bubblewrap and libseccomp2,
+with user namespaces enabled. On Debian/Ubuntu install the OS dependencies with
+`sudo apt-get install bubblewrap libseccomp2`. Parsing fails closed if the boundary cannot start.
+Explicit `--parser-isolation portable` is available only for trusted development inputs on other hosts.
+
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install ".[pdf]"            # the 'pdf' extra (pypdf) is optional; without it PDFs report NOT_ATTEMPTED

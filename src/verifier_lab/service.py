@@ -1124,6 +1124,9 @@ class Service:
                 "sql": {"available": True, "dialects": ["generic", "postgresql", "mysql", "sqlite", "unresolved"]},
                 "pdf": {"available": ok, "parser": "pypdf" if ok else None, "version": ver or None,
                         "ocr": False},
+                "parser_isolation": {"mode": self.limits.isolation,
+                    "backend": "linux-bubblewrap+seccomp" if self.limits.isolation == "required" else "portable-resource-limits",
+                    "note": "required mode fails closed when the host cannot establish isolation"},
                 "limits": self.limits.to_dict(), "max_upload_bytes": self.admission.max_bytes}
 
 

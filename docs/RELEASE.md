@@ -1,8 +1,12 @@
 # Reproducible release checks
 
-The current validation target is Linux with Python 3.12. This is a release-check workflow, not a
+The current validation target is Linux with Python 3.12, Bubblewrap, libseccomp2 and enabled user namespaces. This is a release-check workflow, not a
 publication command. Other platforms are not established by one Linux run. No signing or upload
 is performed by the helper; GitHub CI retains its artifacts for review.
+
+On Debian/Ubuntu, install `bubblewrap libseccomp2` through the OS package manager first. A host
+that prohibits user-namespace UID mapping cannot execute the required parser integration gate;
+use the host execution surface rather than bypassing isolation in tests.
 
 From the repository root, using Python 3.12 with `venv` and pip available:
 

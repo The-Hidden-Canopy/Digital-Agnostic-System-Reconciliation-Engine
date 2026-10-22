@@ -159,6 +159,8 @@ async function viewImport(id, soft = false) {
   // Recheck after the asynchronous requests so that refresh cannot erase their input.
   if (soft && (($('#files') && $('#files').files.length) || document.activeElement.closest('form'))) return;
   put(main, h("h1", { text: "Import sources" }),
+    caps.parser_isolation && caps.parser_isolation.mode === "portable" ? h("div", { class: "notice warn", role: "alert",
+      text: "Portable parsing mode: OS isolation is disabled. Import trusted documents only." }) : null,
     h("div", { class: "card" }, form), h("div", { class: "card" }, h("h2", { text: "Sources" }), table),
     id ? h("div", { id: "detail" }) : null);
   if (id && live()) await sourceDetail(id);

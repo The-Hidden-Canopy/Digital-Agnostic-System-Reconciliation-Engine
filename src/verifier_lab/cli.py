@@ -188,6 +188,8 @@ def _packs(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="verifier-lab", description=__doc__.split("\n\n")[0])
     ap.add_argument("--workspace", default=".workspace", help="local workspace directory (default: .workspace)")
+    ap.add_argument("--parser-isolation", choices=["required", "portable"], default="required",
+                    help="required Linux sandbox (default), or explicit portable development mode")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("serve", help="start the local workbench UI (loopback only)")
     s.add_argument("--host", default="127.0.0.1")
@@ -300,7 +302,8 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             wb.service.close()
         return OK
-    svc = Service(Path(args.workspace))
+    from .ingestion.common import Limits
+    svc = Service(Path(args.workspace), limits=Limits(isolation=args.parser_isolation))
     try:
         if args.cmd == "import":
             results = []

@@ -10,9 +10,9 @@ and advanced breadth to follow a usable generic release.
 | Contracts and deterministic dispatch (01–02) | `model.py`, `canonical.py`, `validation.py`, `engine.py`; contract vectors, hash-seed and adversarial tests | Broader platform evidence; additional rule families need their own witness contracts |
 | Composition (03) | `composition.py`, `graph.py`; cycle/closure/tag/unit obligations, targeted scope, change-impact paths, independent checker, UI | Transitive-evidence cache keys; wider constraint vocabulary |
 | Purpose-relative completeness (04) | `purposes.py`; role binding, generation coherence, lifecycle obligations, UI/export/checker | Conditional applicability and richer coherence rules; user profile editing |
-| Stateful experiments and reduction (05, 07) | Independent reference/candidate KV store, transformation pipeline and seeded scheduler; three-way replay, KV crash enumeration, bounded reduction and fresh-process verification; external KV subject adapter | Hardened executable isolation; broader stateful-system coverage |
+| Stateful experiments and reduction (05, 07) | Independent reference/candidate KV store, transformation pipeline and seeded scheduler; three-way replay, KV crash enumeration, bounded reduction and fresh-process verification; external KV subject adapter | Broader stateful-system coverage; isolation of explicitly supplied external programs remains separate |
 | Temporal reasoning (06) | Exact decimal interval reasoning and `interval.relation`; independent re-derivation | Richer temporal UI and additional rule families |
-| Admission and document review (08, 17) | PDF/JSON/Markdown/SQL, subprocess limits, coverage, exact spans, append-only review, stale runs; adversarial and workflow suites | Hardened OS sandbox, optional OCR, trusted signatures, directory-package admission is outside the current upload path |
+| Admission and document review (08, 17) | PDF/JSON/Markdown/SQL, required Linux namespaces/syscall boundary, subprocess limits, coverage, exact spans, append-only review, stale runs; adversarial and workflow suites | Optional OCR, trusted signatures, directory-package admission is outside the current upload path |
 | Campaigns and independent reports (09–10) | Fixed mutation/metamorphic manifests, defective controls, independent totals/witness checking, external verifier adapter | Broader mutation/rule coverage and independently implemented language/runtime checker |
 | Generic risk packs (11) | Strict data-only grammar, three-valued applicability, dependency/version checks, UI obligations and proposed remediation | Catalog breadth; reviewed jurisdiction source mappings |
 | Packaging and release evidence (12, chapter 13 K) | `tools/check_release.py`: hashed Python build/parser inputs, two matching clean wheel builds, exact content allowlist, isolated offline installs, four-format CLI and optional installed-wheel Chromium journey; CI definition added | CI must actually execute remotely; broader platform matrix; full provenance/license review and owner release review |
@@ -65,6 +65,15 @@ The installed-wheel acceptance also exercises both systems and their reduced cou
 Local validation for this increment: 361 Python tests passed; the expanded installed-wheel Chromium
 journey passed; two independent wheel builds matched. These are Linux/Python 3.12 observations,
 not a claim that the GitHub workflow or other platforms have executed.
+
+## Parser isolation continuation
+
+Required Linux parser mode now uses a minimal read-only Bubblewrap filesystem, private process
+and network namespaces, libseccomp native syscall denial, empty environment and bounded parent
+output collection. It does not expose the application workspace to parser code and does not
+silently downgrade to portable mode. Tests probe raw native socket/fork/exec attempts, unrelated
+host-file reads, missing isolation and output overproduction. See SECURITY.md for scope and
+platform prerequisites. Explicit external subject/verifier programs are a separate trust boundary.
 
 ## Next work
 

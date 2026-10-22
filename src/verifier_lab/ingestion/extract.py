@@ -6,12 +6,14 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 from ..canonical import record_id, sha256_digest
 from .common import Limits, extraction_manifest, summarize
 from .worker import run_in_process, to_wire
+from .isolation import IsolationUnavailable, command
 
 PKG_ROOT = str(Path(__file__).resolve().parents[2])
 BOOT = ("import sys; sys.path.insert(0, sys.argv[1]); "
@@ -28,32 +30,67 @@ class ExtractionFailure(Exception):
 def extract_isolated(fmt: str, data: bytes, dialect: str | None, limits: Limits,
                      should_cancel=lambda: False) -> dict:
     request = json.dumps({"format": fmt, "dialect": dialect, "limits": limits.to_dict()})
+    try:
+        argv = command([sys.executable, "-E", "-s", "-B", "-c", BOOT, PKG_ROOT, request], PKG_ROOT, limits.isolation)
+    except IsolationUnavailable as exc:
+        raise ExtractionFailure("isolation_unavailable", str(exc)) from exc
     deadline = time.monotonic() + limits.wall_seconds
     with tempfile.TemporaryDirectory(prefix="vl-worker-") as cwd:
         proc = subprocess.Popen(
-            [sys.executable, "-E", "-s", "-c", BOOT, PKG_ROOT, request],
+            argv,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd,
             env={"PATH": "", "LANG": "C.UTF-8"})
-        stdout = b""
-        pending: bytes | None = data
-        while True:
-            if should_cancel():
-                proc.kill()
-                proc.communicate()
-                raise ExtractionFailure("cancelled")
-            if time.monotonic() > deadline:
-                proc.kill()
-                proc.communicate()
-                raise ExtractionFailure("wall_clock_timeout")
+        chunks, exceeded = {}, threading.Event()
+
+        def read_limited(name, stream, bound):
             try:
-                stdout, _ = proc.communicate(input=pending, timeout=0.1)
-                break
-            except subprocess.TimeoutExpired:
-                pending = None  # input already handed to communicate(); only wait from here
-                continue
-    if len(stdout) > MAX_OUTPUT:
+                value = stream.read(bound + 1)
+                chunks[name] = value[:bound]
+                if len(value) > bound:
+                    exceeded.set()
+                    proc.kill()
+            finally:
+                stream.close()
+
+        def send_input():
+            try:
+                proc.stdin.write(data)
+            except (BrokenPipeError, OSError):
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+
+        threads = [threading.Thread(target=read_limited, args=("stdout", proc.stdout, MAX_OUTPUT)),
+                   threading.Thread(target=read_limited, args=("stderr", proc.stderr, 65536)),
+                   threading.Thread(target=send_input)]
+        for thread in threads:
+            thread.start()
+        try:
+            while True:
+                if should_cancel():
+                    raise ExtractionFailure("cancelled")
+                if time.monotonic() > deadline:
+                    raise ExtractionFailure("wall_clock_timeout")
+                try:
+                    proc.wait(timeout=0.05)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            for thread in threads:
+                thread.join()
+        stdout = chunks.get("stdout", b"")
+    if exceeded.is_set():
         raise ExtractionFailure("output_limit")
     if proc.returncode != 0:
+        if limits.isolation == "required" and chunks.get("stderr", b"").startswith(b"bwrap:"):
+            raise ExtractionFailure("isolation_unavailable", "the host cannot start the Linux parser sandbox")
         raise ExtractionFailure("worker_crashed", f"exit {proc.returncode}")
     try:
         out = json.loads(stdout)

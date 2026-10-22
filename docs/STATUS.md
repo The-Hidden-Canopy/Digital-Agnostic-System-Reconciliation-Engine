@@ -151,15 +151,26 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 * 361 Python tests passed, including randomized reference agreement, invalid inputs, all checkpoint
   boundaries, all injected defects and rehashed forgeries. Installed-wheel CLI and Chromium checks passed.
 
+## Added in increment twelve (OS parser boundary)
+
+* Default parsing requires Linux user/mount/PID/network namespaces through Bubblewrap and a native
+  syscall filter through libseccomp. Workspace files and credentials are absent from the worker's
+  mounts. Network syscalls, fork/exec and namespace/privilege operations are denied after bootstrap.
+* Missing isolation fails closed. Explicit `--parser-isolation portable` is trusted developer
+  configuration, recorded in extraction limits/capabilities, and is not a hostile-code boundary.
+* Parent stdout/stderr capture is bounded during execution. Native syscall and host-filesystem
+  probes supplement malformed-document tests; cancellation and memory-limit errors stay operational.
+* CI installs the required OS packages. See SECURITY.md and RELEASE.md for validated scope.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
   dependency-free and auditable. API types are not generated; the contract is the JSON in `server.py`/`service.py`.
 * **Events:** job progress is polled (`GET /jobs/<id>/events?after=<seq>`), not server-sent. The sequence/resume
   contract is implemented; the push transport is not.
-* **Process isolation:** POSIX `resource` limits plus a socket guard inside the worker. This is containment against
-  accidents and malformed input, **not** a hardened sandbox (no seccomp/namespaces). On non-POSIX platforms only the
-  wall-clock timeout applies.
+* **Process isolation:** required Linux parser mode uses Bubblewrap namespaces, read-only code/runtime mounts and
+  libseccomp native syscall denial, plus resource/time/output limits. Explicit portable development mode has weaker
+  guarantees; explicitly supplied external programs still have their separate documented resource containment.
 * **Race-resistant file opening** (chapter 08) is unnecessary here because uploads arrive as bytes over HTTP/CLI
   argument reads, not as directory trees; directory-package admission is not implemented.
 

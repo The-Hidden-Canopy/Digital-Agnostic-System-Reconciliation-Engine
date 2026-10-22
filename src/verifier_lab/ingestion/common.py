@@ -14,6 +14,7 @@ ADAPTER_VERSION = "1"
 
 @dataclass
 class Limits:
+    isolation: str = "required"
     max_bytes: int = 5_000_000
     max_depth: int = 32
     max_tokens: int = 400_000
