@@ -60,7 +60,7 @@ def _limits():
 class ExternalSubject:
     """Speaks the protocol to one fresh process. Mirrors the CandidateStore interface used by the experiments."""
 
-    def __init__(self, command: list[str], seed: str, timeout: float = 10.0, env: dict | None = None):
+    def __init__(self, command: list[str], seed: str, timeout: float = 10.0, env: dict | None = None, handshake: bool = True):
         if not command or not all(isinstance(c, str) for c in command):
             raise SubjectError("bad_command")
         self.command, self.timeout = command, timeout
@@ -73,11 +73,12 @@ class ExternalSubject:
             self._cwd.cleanup()
             raise SubjectError("cannot_start", str(exc)) from exc
         self._buf = b""
-        try:
-            self._call({"cmd": "init", "seed": seed})
-        except SubjectError:
-            self.close()
-            raise
+        if handshake:
+            try:
+                self._call({"cmd": "init", "seed": seed})
+            except SubjectError:
+                self.close()
+                raise
 
     def _call(self, req: dict) -> dict:
         if self.proc.poll() is not None:

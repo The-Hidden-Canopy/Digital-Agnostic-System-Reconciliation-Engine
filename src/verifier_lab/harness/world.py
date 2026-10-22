@@ -15,6 +15,7 @@ from ..rules import (EXTRACT_OP, EXTRACTION_MEDIA, PROVENANCE_MEDIA, CheckContex
 
 L = Limits()
 FACT_PREDICATES = ("fact.equals", "fact.numeric_bound", "fact.present")
+DOMAIN_VERDICTS_LIST = ("SUPPORTED", "CONTRADICTED", "INSUFFICIENT_EVIDENCE", "INVALID_EVIDENCE", "NOT_APPLICABLE", "HUMAN_REVIEW_REQUIRED")
 
 
 @dataclass(frozen=True)

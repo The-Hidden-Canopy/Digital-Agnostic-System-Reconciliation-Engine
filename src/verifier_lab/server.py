@@ -217,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, res, {"ETag": res["etag"]})
             if len(parts) == 2 and parts[0] == "experiments":
                 body = self._json_body()
-                if any(k in body for k in ("subject_cmd", "command", "subject", "executable")):
+                if any(k in body for k in ("subject_cmd", "kernel_cmd", "command", "subject", "executable")):
                     raise ServiceError(422, "commands_not_accepted_over_http",
                                        "running your own program is configured on the command line (--subject-cmd), never over the web API")
                 if parts[1] == "checkpoint":

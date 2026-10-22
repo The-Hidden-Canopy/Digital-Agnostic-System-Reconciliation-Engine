@@ -96,7 +96,12 @@ def _campaign(args) -> int:
         _out(res)
         return OK if res["status"] == "ACCEPTED" else REJECTED
     from .harness.world import KERNELS
-    if args.kernel not in KERNELS:
+    kernel = args.kernel
+    if args.kernel_cmd:
+        import shlex
+        from .harness.external_kernel import ExternalKernel
+        kernel = ExternalKernel(shlex.split(args.kernel_cmd), env=dict(i.partition("=")[::2] for i in args.kernel_env))
+    elif args.kernel not in KERNELS:
         _err(f"unknown kernel; known: {sorted(KERNELS)}")
         return INVALID
     outs = [Path(p) for p in (args.output, args.manifest_output) if p]
@@ -104,12 +109,12 @@ def _campaign(args) -> int:
         _err("refusing to overwrite an existing output")
         return INVALID
     manifest = campaign.build_manifest(args.seed)
-    report = campaign.run_campaign(args.kernel, manifest)
+    report = campaign.run_campaign(kernel, manifest)
     if args.output:
         Path(args.output).write_text(json.dumps(report, indent=1, sort_keys=True))
     if args.manifest_output:
         Path(args.manifest_output).write_text(json.dumps(manifest, indent=1, sort_keys=True))
-    _out({"kernel": args.kernel, "manifest_digest": manifest["manifest_digest"], "report_digest": report["report_digest"],
+    _out({"kernel": report["kernel"]["name"], "manifest_digest": manifest["manifest_digest"], "report_digest": report["report_digest"],
           "summary": report["summary"]["counts"], "mutation_detection": report["summary"]["mutation_detection"],
           "survivors": report["survivors"]})
     return OK if not report["survivors"] and report["summary"]["counts"]["ERROR"] == 0 else ATTENTION
@@ -198,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("campaign", help="run a mutation/metamorphic campaign, or verify a campaign report")
     s.add_argument("action", choices=["run", "verify"])
     s.add_argument("--kernel", default="real")
+    s.add_argument("--kernel-cmd", help="judge YOUR verifier program (JSON-lines protocol) instead of a built-in kernel")
+    s.add_argument("--kernel-env", action="append", default=[], metavar="KEY=VALUE")
     s.add_argument("--seed", default="campaign-1")
     s.add_argument("--output", help="report path (run)")
     s.add_argument("--manifest-output", help="manifest path (run)")

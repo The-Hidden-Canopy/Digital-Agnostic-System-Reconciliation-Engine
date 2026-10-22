@@ -1,4 +1,4 @@
-# Verification Laboratory (increment one)
+# DASRE - Verification Laboratory
 
 DASRE (Digital Agnostic System Reconciliation Engine) is an Open Canopy project by The Hidden Canopy LLC.
 It is licensed under Apache-2.0 and follows the [Open Canopy Contract](OPEN_CANOPY_CONTRACT.md).
@@ -14,7 +14,7 @@ Import  ->  Review claims  ->  Run checks  ->  Findings  ->  Export
 Inputs: **PDF, JSON, Markdown, SQL** (SQL is parsed, never executed). Everything an input says is *data*:
 "ignore earlier instructions", "run this SQL", "fetch this URL" have no authority.
 
-> **Status: a narrow vertical slice, not a release.** See [`docs/STATUS.md`](docs/STATUS.md) for exactly what is
+> **Status: a working local application, not a release.** See [`docs/STATUS.md`](docs/STATUS.md) for exactly what is
 > built, what was tested, and what is deliberately not built yet. Nothing here is legal or compliance advice; a
 > `SUPPORTED` verdict means "the evidence agrees with the reviewed claim", not "the claim is true".
 
@@ -73,7 +73,8 @@ evidence. Duplicate keys are never resolved by "last one wins".
   lifecycle history must be recorded; each obligation keeps its own verdict and says what could resolve it. Fixtures: `fixtures/purposes/`.
 * **Campaigns** — *Advanced → Campaigns* / `verifier-lab campaign run|verify`: mutation operators and metamorphic relations against hand-written cases with
   pre-committed answers, plus deliberately broken verifiers as negative controls. The independent report checker rejects forged totals and hidden failures.
-* **Your own program** — `verifier-lab experiment checkpoint --subject-cmd "python3 examples/reference_subject.py"`; command-line only, never over the web API.
+* **Your own program** — `verifier-lab experiment checkpoint --subject-cmd "python3 examples/reference_subject.py"`, and `verifier-lab campaign run --kernel-cmd "python3 examples/reference_verifier.py"` to judge *your* verifier;
+  command-line only, never over the web API. Every format and protocol is specified in [`docs/FORMATS.md`](docs/FORMATS.md).
 * **Minimization** — `verifier-lab minimize --defect reset_next_id --output case.json` shrinks a failing history to a small reproducer and
   `verifier-lab verify-counterexample case.json` reproduces it in a fresh process. The scope statement says which operators were exhausted.
 
@@ -100,7 +101,7 @@ docs/                                   # status, package format, security model
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .          # 328 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
+python -m unittest discover -s tests -t .          # 337 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
 # Browser journey (needs Playwright + Chromium; not part of unittest):
 verifier-lab --workspace /tmp/ws serve --port 8765 &
 WORKBENCH_URL=http://127.0.0.1:8765/ node tests/e2e/browser_journey.cjs

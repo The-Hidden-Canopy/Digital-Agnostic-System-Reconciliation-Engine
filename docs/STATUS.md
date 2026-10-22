@@ -104,6 +104,14 @@ Limits: the registered conversion table has five pairs; requirements are equalit
 from one evidence document (conflicting copies go to human review); producer tags are assertions, so a SUPPORTED result says so in `conditional_on`.
 The cache-key scheme for incremental re-evaluation (claim + transitive evidence + rule versions) is not implemented; impact analysis is.
 
+## Added in increment eight (adapters for campaigns, format documentation)
+
+* `--kernel-cmd`: a campaign can judge a verifier *program* you supply (`harness/external_kernel.py`; fresh process per scenario; crashes, hangs and malformed answers are `ERROR` cases,
+  never passes; the report names the kernel by the identity of command, file bytes and environment). CLI-only; the HTTP API refuses `kernel_cmd`. Example: `examples/reference_verifier.py`
+  (fact predicates only, so the campaign honestly shows what it does not cover). Tests: `tests/unit/test_external_kernel.py`.
+* `docs/FORMATS.md`: written specification of risk packs, purpose profiles, pipeline descriptions, campaign manifests/reports, counterexample packages and both program protocols
+  (the Open Canopy contract asks that important formats be documented).
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -119,7 +127,7 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 ## Not built yet (explicitly out of this increment)
 
  mutation/metamorphic campaigns and campaign reports (09, most of 10),
-adapters that point *campaigns* at an external verifier; the EU/US/China/Australia packs (14, 15) — **no jurisdiction content exists
+the EU/US/China/Australia packs (14, 15) — **no jurisdiction content exists
 here**; OCR; signatures and trust anchors; model-assisted suggestions; manual creation of claims from free prose;
 manual claim editing beyond the three predicates; dependency-graph and temporal-replay views; multi-project support.
 
