@@ -27,7 +27,15 @@ def command(argv: list[str], package_root: str, mode: str) -> list[str]:
         raise IsolationUnavailable('install bubblewrap for required parser isolation')
     # Bind only the interpreter, its dependencies, installed packages and this package's code.
     # The application workspace, source documents, credentials and host /tmp are not mounted.
-    roots = {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), Path(package_root).resolve()}
+    # Hosted Python toolchains may expose the executable through a lexical
+    # runner path (for example /__t/...) whose resolved prefix is elsewhere.
+    # Bind both spellings: the dynamic loader follows the executable's lexical
+    # RUNPATH, while Python imports use the resolved prefix. All remain
+    # read-only and no application workspace path is added.
+    interpreter_roots = (Path(sys.prefix), Path(sys.base_prefix),
+                         Path(sys.executable).parent.parent)
+    roots = {path for root in interpreter_roots for path in (root, root.resolve())}
+    roots.add(Path(package_root).resolve())
     libraries = [Path(p) for p in ('/usr/lib', '/lib', '/lib64') if Path(p).exists()]
     args = [bwrap, '--unshare-all', '--die-with-parent', '--new-session', '--cap-drop', 'ALL',
             '--clearenv', '--setenv', 'LANG', 'C.UTF-8']

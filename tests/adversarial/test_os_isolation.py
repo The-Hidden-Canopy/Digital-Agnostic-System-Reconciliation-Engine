@@ -19,6 +19,18 @@ from verifier_lab.ingestion.isolation import command
 
 
 class ParserIsolation(unittest.TestCase):
+    def test_command_binds_lexical_and_resolved_interpreter_roots(self):
+        with patch('verifier_lab.ingestion.isolation.sys.prefix', '/runner/python'), \
+                patch('verifier_lab.ingestion.isolation.sys.base_prefix', '/runner/python'), \
+                patch('verifier_lab.ingestion.isolation.sys.executable', '/alias/python/bin/python'), \
+                patch('verifier_lab.ingestion.isolation.sys.platform', 'linux'), \
+                patch('verifier_lab.ingestion.isolation.shutil.which', return_value='/usr/bin/bwrap'), \
+                patch('verifier_lab.ingestion.isolation.Path.resolve', return_value=Path('/resolved')):
+            argv = command(['python', '-c', 'pass'], '/app/src', 'required')
+        bindings = [argv[i + 1].replace('\\', '/') for i, value in enumerate(argv[:-1]) if value == '--ro-bind']
+        self.assertIn('/runner/python', bindings)
+        self.assertIn('/alias/python', bindings)
+
     def test_host_files_native_sockets_and_child_processes_are_blocked(self):
         with tempfile.TemporaryDirectory(prefix='vl-host-private-') as directory:
             sentinel = Path(directory) / 'private.txt'
