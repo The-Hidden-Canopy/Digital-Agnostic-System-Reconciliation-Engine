@@ -10,7 +10,7 @@ and advanced breadth to follow a usable generic release.
 | Contracts and deterministic dispatch (01–02) | `model.py`, `canonical.py`, `validation.py`, `engine.py`; contract vectors, hash-seed and adversarial tests | Broader platform evidence; additional rule families need their own witness contracts |
 | Composition (03) | `composition.py`, `graph.py`; cycle/closure/tag/unit obligations, targeted scope, change-impact paths, independent checker, UI | Transitive-evidence cache keys; wider constraint vocabulary |
 | Purpose-relative completeness (04) | `purposes.py`; role binding, generation coherence, lifecycle obligations, UI/export/checker | Conditional applicability and richer coherence rules; user profile editing |
-| Stateful experiments and reduction (05, 07) | Independent reference/candidate KV stores, three-way replay, crash enumeration, bounded reducer, fresh-process counterexample verification; external subject adapter | Other proposed synthetic systems (transformation pipeline and seeded scheduler) with their own witnessed defects and reduced reproducers; hardened executable isolation |
+| Stateful experiments and reduction (05, 07) | Independent reference/candidate KV store, transformation pipeline and seeded scheduler; three-way replay, KV crash enumeration, bounded reduction and fresh-process verification; external KV subject adapter | Hardened executable isolation; broader stateful-system coverage |
 | Temporal reasoning (06) | Exact decimal interval reasoning and `interval.relation`; independent re-derivation | Richer temporal UI and additional rule families |
 | Admission and document review (08, 17) | PDF/JSON/Markdown/SQL, subprocess limits, coverage, exact spans, append-only review, stale runs; adversarial and workflow suites | Hardened OS sandbox, optional OCR, trusted signatures, directory-package admission is outside the current upload path |
 | Campaigns and independent reports (09–10) | Fixed mutation/metamorphic manifests, defective controls, independent totals/witness checking, external verifier adapter | Broader mutation/rule coverage and independently implemented language/runtime checker |
@@ -51,6 +51,20 @@ coverage remain unchanged; authoring cannot manufacture evidence. Tests cover Un
 invalid/stale selections, idempotency, persistence, source replacement, HTTP authorization,
 non-equality built-in predicates through the service/CLI, export verification and provenance tampering.
 The browser journey exercises the new flow against an installed wheel.
+
+## Full laboratory continuation
+
+All three synthetic systems named by chapter 00 now have independent reference/candidate transitions,
+positive controls, intentional defects, full-state three-way comparison and reduced reproducer
+verification in a fresh process. The pipeline detects stale transformation-cache reuse and lost source
+revisions; the scheduler detects unstable deadline ties and lost random continuity. The CLI, bounded
+HTTP endpoints and Advanced workbench expose both, including counterexample download. Randomized
+reference-agreement tests include rejected operations, and forged witnesses/signatures remain rejected.
+The installed-wheel acceptance also exercises both systems and their reduced counterexamples.
+
+Local validation for this increment: 361 Python tests passed; the expanded installed-wheel Chromium
+journey passed; two independent wheel builds matched. These are Linux/Python 3.12 observations,
+not a claim that the GitHub workflow or other platforms have executed.
 
 ## Next work
 

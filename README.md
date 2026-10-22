@@ -70,7 +70,7 @@ evidence. Duplicate keys are never resolved by "last one wins".
 * **Risk packs** — pick a data-only pack on the Run page and state the context facts you know. Unknown facts stay unknown (never false);
   each obligation reports its applicability, the facts it used and a proposed next step. `verifier-lab pack list|validate|install|diff`.
 * **Experiments** — *Advanced* page / `verifier-lab experiment checkpoint|crash`: a three-way (continuous / resumed / replayed) comparison
-  on a fictional key-value store with deliberately injectable defects, and exhaustive crash-boundary enumeration on a virtual store.
+  on fictional key-value store, transformation pipeline and seeded scheduler subjects with deliberately injectable defects; plus exhaustive crash-boundary enumeration on a virtual KV store.
 * **Composition** — *Advanced → Composition analysis*: do individually valid parts make a valid whole? Units, tags and generations across edges, explicit
   conversions only, separate obligations, targeted scoping and change-impact paths. Fixtures: `fixtures/composition/`.
 * **Purposes** — *Run → Purpose*: is this evidence enough for *inspecting*, for *resuming exactly*? Roles are bound by fact key, generations must agree,
@@ -79,6 +79,7 @@ evidence. Duplicate keys are never resolved by "last one wins".
   pre-committed answers, plus deliberately broken verifiers as negative controls. The independent report checker rejects forged totals and hidden failures.
 * **Your own program** — `verifier-lab experiment checkpoint --subject-cmd "python3 examples/reference_subject.py"`, and `verifier-lab campaign run --kernel-cmd "python3 examples/reference_verifier.py"` to judge *your* verifier;
   command-line only, never over the web API. Every format and protocol is specified in [`docs/FORMATS.md`](docs/FORMATS.md).
+* **More synthetic systems** — `verifier-lab experiment pipeline --defect stale_cache --ops 12`, `verifier-lab experiment scheduler --defect reverse_ties --ops 12`; reduce with `verifier-lab minimize --system pipeline --defect stale_cache --ops 12 --output pipeline-case.json`. The Advanced page exposes both.
 * **Minimization** — `verifier-lab minimize --defect reset_next_id --output case.json` shrinks a failing history to a small reproducer and
   `verifier-lab verify-counterexample case.json` reproduces it in a fresh process. The scope statement says which operators were exhausted.
 

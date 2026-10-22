@@ -26,6 +26,9 @@ def _err(msg: str) -> None:
 
 
 def _experiments(args) -> int:
+    if (args.cmd == "experiment" and args.kind in ("pipeline", "scheduler")) or \
+            (args.cmd == "minimize" and args.system != "store"):
+        return _laboratory(args)
     from .experiments import crash as crash_mod
     from .experiments.checkpoint import ExperimentCase, run_experiment
     from .experiments.history import generate_history
@@ -82,6 +85,40 @@ def _experiments(args) -> int:
           "oracle_calls": result.oracle_calls, "scope": pkg["reduction"]["scope"],
           "fresh_process_verification": verdict["status"], "package": str(out)})
     return OK if verdict["status"] == "VERIFIED" else REJECTED
+
+
+def _laboratory(args) -> int:
+    from .canonical import canonical_bytes
+    from .experiments.laboratory import generated_case, reduce_case, run_case
+    from .experiments.package import verify_package_fresh_process, write_package
+    if args.subject_cmd or args.subject_env:
+        _err("pipeline and scheduler experiments use only the installed fictional subjects")
+        return INVALID
+    try:
+        case = generated_case(args.kind if args.cmd == "experiment" else args.system,
+                              args.seed, args.ops, args.boundary, args.defect)
+        if args.cmd == "experiment":
+            result = run_case(case)
+            _out({"case": case.identity(), **result.to_dict()})
+            return FAILED if result.errors else OK if result.passed else ATTENTION
+        target = Path(args.output)
+        if target.exists():
+            _err(f"refusing to overwrite {target}")
+            return INVALID
+        summary, package = reduce_case(case, args.max_oracle_calls)
+        if package is None:
+            _out(summary)
+            return INVALID
+        write_package(package, target)
+        checked = verify_package_fresh_process(target)
+        _out({**summary, "fresh_process_verification": checked["status"], "package": str(target)})
+        return OK if checked["status"] == "VERIFIED" else REJECTED
+    except (ValueError, TypeError) as exc:
+        _err(str(exc))
+        return INVALID
+    except OSError as exc:
+        _err(str(exc))
+        return FAILED
 
 
 def _campaign(args) -> int:
@@ -194,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("verify-package", help="independently verify an exported package (dir or zip)")
     s.add_argument("package")
     s = sub.add_parser("experiment", help="run a replay/checkpoint or crash experiment on the reference store")
-    s.add_argument("kind", choices=["checkpoint", "crash"])
+    s.add_argument("kind", choices=["checkpoint", "crash", "pipeline", "scheduler"])
     s.add_argument("--seed", default="seed-1")
     s.add_argument("--ops", type=int, default=60)
     s.add_argument("--boundary", type=int, default=None, help="checkpoint position (default: half)")
@@ -204,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--subject-cmd", help="run your own subject program (JSON-lines protocol) instead of the built-in candidate")
     s.add_argument("--subject-env", action="append", default=[], metavar="KEY=VALUE", help="environment passed to the subject (its identity includes it)")
     s = sub.add_parser("minimize", help="reduce a failing checkpoint experiment to a small verified reproducer")
+    s.add_argument("--system", choices=["store", "pipeline", "scheduler"], default="store")
     s.add_argument("--seed", default="seed-1")
     s.add_argument("--ops", type=int, default=120)
     s.add_argument("--boundary", type=int, default=None)

@@ -981,6 +981,26 @@ class Service:
                 "capabilities": self.capabilities()}
 
     # --------------------------------------------------------- advanced: experiments (bounded, synchronous)
+    def experiment_laboratory(self, system, seed="seed-1", ops=60, boundary=None, defects=None,
+                             reduce=False, max_oracle_calls=3000):
+        import tempfile
+        from .experiments.laboratory import generated_case, reduce_case, run_case
+        from .experiments.package import verify_package_fresh_process, write_package
+        try:
+            case = generated_case(system, seed, ops, boundary, () if defects is None else defects)
+            if not reduce:
+                return {"case": case.identity(), **run_case(case).to_dict()}
+            summary, package = reduce_case(case, max_oracle_calls)
+        except (TypeError, ValueError) as exc:
+            raise ServiceError(422, "bad_laboratory_case", str(exc)) from exc
+        if package is None:
+            return summary
+        with tempfile.TemporaryDirectory(prefix="vl-laboratory-") as directory:
+            path = Path(directory) / "counterexample.json"
+            write_package(package, path)
+            checked = verify_package_fresh_process(path)
+        return {**summary, "fresh_process_verification": checked["status"], "package": package}
+
     def _case(self, seed, ops, boundary, defects):
         from .experiments.checkpoint import ExperimentCase
         from .experiments.history import generate_history

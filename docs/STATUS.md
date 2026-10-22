@@ -138,6 +138,19 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 * An asynchronous import refresh rechecks file selection before replacing the form, preserving files
   selected while the refresh's requests were in flight.
 
+## Added in increment eleven (the other synthetic systems)
+
+* `subjects/pipeline.py` and `subjects/scheduler.py`: separately implemented reference/candidate
+  transitions for versioned document transformations and a seeded logical-time scheduler. Four
+  intentional defects cover stale cache reuse, dropped revisions, deadline ties and random continuity.
+* `experiments/laboratory.py`: full-state three-way comparison, bounded operation deletion with
+  stable failure signatures, version-pinned counterexample packages, original/reduced witness checks
+  and fresh-process reproduction. Shared serialization is not shared transition semantics.
+* CLI `experiment pipeline|scheduler` and `minimize --system ...`; bounded HTTP endpoints; system
+  selection in the Advanced page; downloadable counterexamples. Existing KV workflows remain available.
+* 361 Python tests passed, including randomized reference agreement, invalid inputs, all checkpoint
+  boundaries, all injected defects and rehashed forgeries. Installed-wheel CLI and Chromium checks passed.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -154,7 +167,7 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 
 The EU/US/China/Australia packs (14, 15) — **no jurisdiction pack ships here**; OCR; signatures and trust anchors;
 model-assisted suggestions; broader claim predicate editing;
-temporal-replay and general dependency-graph views; multi-project support; additional synthetic stateful systems.
+temporal-replay and general dependency-graph views; multi-project support.
 Campaigns, replay and reduction are implemented as described above, with their stated scope limits.
 
 ## Release gates (README of the docuseries) — honest state

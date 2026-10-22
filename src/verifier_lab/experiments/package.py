@@ -91,6 +91,11 @@ def write_package(pkg: dict, path: Path) -> None:
 
 def verify_in_process(pkg: dict, factory=None) -> dict:
     """Re-evaluate the witness from the stored case alone; never trusts the reducer's assertions."""
+    from .laboratory import SCHEMA as LAB_SCHEMA, verify_counterexample
+    if isinstance(pkg, dict) and pkg.get("schema") == LAB_SCHEMA:
+        if factory is not None:
+            return {"status": "REJECTED", "checks": [{"name": "builtin_subject_required", "ok": False}]}
+        return verify_counterexample(pkg)
     checks = []
 
     def check(name, ok, detail=""):

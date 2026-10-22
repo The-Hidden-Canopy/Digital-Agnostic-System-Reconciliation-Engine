@@ -229,6 +229,13 @@ class Handler(BaseHTTPRequestHandler):
                                        "running your own program is configured on the command line (--subject-cmd), never over the web API")
                 if parts[1] == "checkpoint":
                     return self._json(200, svc.experiment_checkpoint(body.get("seed", "seed-1"), body.get("ops", 60), body.get("boundary"), body.get("defects")))
+                if parts[1] in ("pipeline", "scheduler"):
+                    return self._json(200, svc.experiment_laboratory(parts[1], body.get("seed", "seed-1"),
+                        body.get("ops", 60), body.get("boundary"), body.get("defects")))
+                if parts[1] == "laboratory-minimize":
+                    return self._json(200, svc.experiment_laboratory(body.get("system"), body.get("seed", "seed-1"),
+                        body.get("ops", 60), body.get("boundary"), body.get("defects"), True,
+                        body.get("max_oracle_calls", 3000)))
                 if parts[1] == "campaign":
                     return self._json(200, svc.campaign_run(body.get("kernel", "real"), body.get("seed", "campaign-1")))
                 if parts[1] == "campaign-verify":

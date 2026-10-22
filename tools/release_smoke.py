@@ -56,8 +56,22 @@ def smoke(root: Path) -> dict:
     cli('export', pdf_run['id'], '--output', str(pdf_package))
     if cli('verify-package', str(pdf_package))['status'] != 'VERIFIED':
         raise RuntimeError('PDF package was not independently verified')
+    laboratory = {}
+    for system, defect in (('pipeline', 'stale_cache'), ('scheduler', 'reverse_ties')):
+        if cli('experiment', system, '--ops', '12')['passed'] is not True:
+            raise RuntimeError(f'{system} correct subject diverged')
+        failed = cli('experiment', system, '--ops', '12', '--defect', defect, expected=1)
+        if not failed['divergences'] or failed['errors']:
+            raise RuntimeError(f'{system} did not expose the injected defect')
+        target = root / f'{system}-counterexample.json'
+        reduced = cli('minimize', '--system', system, '--ops', '12', '--defect', defect,
+                      '--max-oracle-calls', '200', '--output', str(target))
+        if reduced['fresh_process_verification'] != 'VERIFIED' or \
+                cli('verify-counterexample', str(target))['status'] != 'VERIFIED':
+            raise RuntimeError(f'{system} counterexample did not reproduce')
+        laboratory[system] = {'defect': defect, 'reduced_units': reduced['reduced_units'], 'verified': True}
     return {'formats': ['Markdown', 'JSON', 'SQL', 'PDF'], 'tutorial_findings': findings,
-            'pdf_verdict': 'CONTRADICTED', 'independent_packages_verified': 2}
+            'pdf_verdict': 'CONTRADICTED', 'independent_packages_verified': 2, 'laboratory': laboratory}
 
 
 if __name__ == '__main__':

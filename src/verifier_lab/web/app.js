@@ -642,11 +642,17 @@ async function viewExport() {
 async function viewAdvanced() {
   setNav("");
   const live = begin();
-  const DEFECTS = ["omit_random_cursor", "reset_next_id", "double_cursor_after_restore", "flatten_txn", "sort_replay"];
+  const DEFECTS = { store: ["omit_random_cursor", "reset_next_id", "double_cursor_after_restore", "flatten_txn", "sort_replay"],
+    pipeline: ["stale_cache", "drop_versions"], scheduler: ["reverse_ties", "drop_random_cursor"] };
   const out = h("div", { role: "status", "aria-live": "polite" });
   const seed = h("input", { id: "x-seed", value: "seed-1" }), ops = h("input", { id: "x-ops", type: "number", min: 0, max: 400, value: 120 });
-  const defect = h("select", { id: "x-defect" }, h("option", { value: "", text: "none (the correct candidate)" }), DEFECTS.map((d) => h("option", { value: d, text: d })));
-  const body = () => ({ seed: seed.value, ops: parseInt(ops.value, 10), defects: defect.value ? [defect.value] : [] });
+  const system = h("select", { id: "x-system" }, [["store", "Transactional key-value store"], ["pipeline", "Document transformation pipeline"],
+    ["scheduler", "Seeded job scheduler"]].map(([value, text]) => h("option", { value, text })));
+  const defect = h("select", { id: "x-defect" });
+  const updateDefects = () => put(defect, h("option", { value: "", text: "none (the correct candidate)" }),
+    DEFECTS[system.value].map((d) => h("option", { value: d, text: d })));
+  system.addEventListener("change", updateDefects); updateDefects();
+  const body = () => ({ system: system.value, seed: seed.value, ops: parseInt(ops.value, 10), defects: defect.value ? [defect.value] : [] });
   const run = async (path, payload, render) => {
     put(out, h("p", { class: "muted", text: "Running…" }));
     try { render(await api("POST", "experiments/" + path, { body: payload })); } catch (e) { put(out, errorBox(e)); }
@@ -661,7 +667,12 @@ async function viewAdvanced() {
     : [h("div", { class: "notice " + (r.fresh_process_verification === "VERIFIED" ? "ok" : "bad") }, h("strong", { text: `${r.original_units} → ${r.reduced_units} operations` }),
         ` in ${r.oracle_calls} oracle calls. Fresh-process reproduction: ${r.fresh_process_verification}.`),
       h("p", { text: r.scope }), h("pre", { class: "src", tabIndex: 0, "aria-label": "Reduced case", text: JSON.stringify(r.reduced_case, null, 2) }),
-      h("p", { class: "muted", text: `Failure signature: ${r.signature.witness_class} (${r.signature.reason_code}). The package contains the full reduction log.` })]);
+      h("p", { class: "muted", text: `Failure signature: ${r.signature.witness_class} (${r.signature.reason_code}). The package contains the full reduction log.` }),
+      r.package ? h("button", { text: "Download counterexample", onclick: () => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify(r.package)], { type: "application/json" }));
+        const link = h("a", { href: url, download: "counterexample.json" }); document.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } }) : null]);
   const crashSel = h("select", { id: "c-w" }, h("option", { value: "", text: "correct writer" }), h("option", { value: "marker_before_flush", text: "marker_before_flush" }));
   const crashRec = h("select", { id: "c-r" }, h("option", { value: "", text: "correct recovery" }), ["join_members", "silent_fallback"].map((d) => h("option", { value: d, text: d })));
   const showCrash = (r) => put(out,
@@ -674,11 +685,12 @@ async function viewAdvanced() {
   put(main, h("h1", { text: "Advanced: experiments" }),
     h("p", {}, h("a", { href: "#/campaign", text: "Mutation and metamorphic campaigns →" }), " - does the verifier itself catch defects?"),
     h("p", {}, h("a", { href: "#/composition", text: "Composition analysis →" }), " - do valid parts make a valid whole (units, tags, generations)?"),
-    h("div", { class: "notice", text: "Optional laboratory tools on a fictional key-value store. Defects are deliberately injected so you can see the laboratory catch them. None of this is needed for the Import → Export workflow." }),
+    h("div", { class: "notice", text: "Optional laboratory tools on three fictional systems. Defects are deliberately injected so you can see the laboratory catch them. None of this is needed for the Import → Export workflow." }),
     h("div", { class: "card" }, h("h2", { text: "Replay and checkpoint" }),
+      h("label", { for: "x-system", text: "Synthetic system" }), system,
       h("label", { for: "x-seed", text: "Seed" }), seed, h("label", { for: "x-ops", text: "Operations (0-400)" }), ops, h("label", { for: "x-defect", text: "Injected defect" }), defect,
-      h("div", { class: "row", style: "margin-top:.6rem" }, h("button", { class: "primary", text: "Run three-way experiment", onclick: () => run("checkpoint", body(), showCheckpoint) }),
-        h("button", { text: "Minimize the failure", onclick: () => run("minimize", body(), showMin) }))),
+      h("div", { class: "row", style: "margin-top:.6rem" }, h("button", { class: "primary", text: "Run three-way experiment", onclick: () => run(system.value === "store" ? "checkpoint" : system.value, body(), showCheckpoint) }),
+        h("button", { text: "Minimize the failure", onclick: () => run(system.value === "store" ? "minimize" : "laboratory-minimize", body(), showMin) }))),
     h("div", { class: "card" }, h("h2", { text: "Test your own program" }),
       h("p", {}, "The same experiments and minimizer can run against a program you supply, speaking a small JSON-lines protocol over stdin/stdout. Because that executes software, it is configured on the command line only - this page never accepts a command, and a counterexample package never causes one to run."),
       h("pre", { class: "src", tabIndex: 0, "aria-label": "Command line example", text: [

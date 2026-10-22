@@ -81,3 +81,36 @@ explicit human authoring reason, and `semantic_entailment: not_machine_verified`
 checker verifies that byte linkage and labeling; it does not infer that free prose logically entails
 the reviewed claim. Authored interpretations never become evidence facts. Source replacement and
 claim revision changes retain history and mark dependent runs stale through the existing rules.
+
+## Pipeline and scheduler experiment cases
+
+The laboratory also supplies two fictional subjects, selected by the literal names `pipeline` and
+`scheduler`; neither a case nor a counterexample can select code or a command. Each has independently
+written reference and candidate transitions. `verifier-lab experiment pipeline|scheduler --ops 12`
+compares every state field across continuous, checkpoint/resumed and reference-checkpoint replay paths.
+The Advanced page exposes the same operations and intentional defect controls.
+
+Pipeline operations are `put` (`key`, `value`) and `transform` (`key`, `mode`: `upper|reverse`, `output`).
+The explicit state inventory is documents with source revisions, outputs with source revisions,
+revision-keyed transform cache, and operation cursor. `stale_cache` incorrectly reuses an older source;
+`drop_versions` omits revision continuity from serialized state. Scheduler operations are `schedule`
+(`key`, `delay`), `advance` (`ticks`), and `cancel` (`key`). Logical delays/ticks are integers in 0–1000.
+Its inventory is logical time, next allocation sequence, random cursor, pending jobs, completed
+observations and operation cursor. Equal deadlines run in allocation order. `reverse_ties` violates
+that order; `drop_random_cursor` loses random continuity in a checkpoint. Rejected operations leave
+all state fields unchanged. These are bounded demonstrations, not production schedulers or parsers.
+
+Cases record `system`, `seed`, `ops`, checkpoint `boundary` and `defects`. At most 400 operations and
+a 100-character seed are admitted. Pipeline values are bounded to 1000 characters and names to 64.
+Use `verifier-lab minimize --system pipeline|scheduler --defect <name> --ops 12 --output case.json`,
+then `verifier-lab verify-counterexample case.json` to reproduce in a fresh interpreter. Existing KV
+store commands remain unchanged. The UI can download the same counterexample package.
+
+Schema `verifier-lab/laboratory-counterexample/1` pins runner/subject semantics versions, original
+and reduced case identities, a position-independent failure signature, exact witness and reduction
+log/scope. Verification re-evaluates both original and reduced cases, checks subject/seed/defect
+continuity, signature equality, cost and the exact witness. The reducer only deletes whole operation
+chunks/single operations while adjusting the boundary. Its exhausted scope never implies global
+minimality. A 3–3000-call budget includes the mandatory reproducibility checks. Fresh-process
+reproduction is independent of reducer memory; it shares the runner and is not an independent-language
+implementation. Unknown semantics versions, forged witnesses and changed failure signatures are rejected.

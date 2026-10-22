@@ -116,6 +116,23 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.click('button:has-text("Enumerate every crash position")');
   await page.waitForSelector('text=All recoveries valid');
 
+  for (const [system, defectName] of [['pipeline', 'stale_cache'], ['scheduler', 'reverse_ties']]) {
+    await page.selectOption('#x-system', system);
+    await page.fill('#x-ops', '12');
+    await page.click('button:has-text("Run three-way experiment")');
+    await page.waitForSelector('text=No divergence');
+    await page.selectOption('#x-defect', defectName);
+    await page.click('button:has-text("Run three-way experiment")');
+    await page.waitForSelector('.notice.bad');
+    assert.ok((await page.innerText('main')).includes('state.'));
+    await page.click('button:has-text("Minimize the failure")');
+    await page.waitForSelector('text=Fresh-process reproduction: VERIFIED', { timeout: 60000 });
+    const [counterexample] = await Promise.all([page.waitForEvent('download'), page.click('text=Download counterexample')]);
+    const stored = JSON.parse(require('fs').readFileSync(await counterexample.path(), 'utf8'));
+    assert.strictEqual(stored.schema, 'verifier-lab/laboratory-counterexample/1');
+    assert.strictEqual(stored.reduced.case.system, system);
+  }
+
   // 4d. campaign page: the real verifier passes; a defective one fails visibly; a forged report is rejected
   await page.goto(BASE + '#/campaign');
   await page.click('button:has-text("Run campaign")');
