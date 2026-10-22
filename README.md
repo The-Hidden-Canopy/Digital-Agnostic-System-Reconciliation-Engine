@@ -1,5 +1,8 @@
 # Verification Laboratory (increment one)
 
+DASRE (Digital Agnostic System Reconciliation Engine) is an Open Canopy project by The Hidden Canopy LLC.
+It is licensed under Apache-2.0 and follows the [Open Canopy Contract](OPEN_CANOPY_CONTRACT.md).
+
 A local-first workbench that turns documents into **reviewed claims**, tests those claims against other
 documents with **deterministic checks**, and exports a **portable package that an independent checker can
 re-verify offline**. It is vendor- and domain-agnostic, needs no cloud account, no AI provider and no network.
@@ -109,4 +112,5 @@ selects a parser, path, rule or command. Details and limits: [`docs/SECURITY.md`
 
 ## License
 
-Apache-2.0 (see `LICENSE`). Public release of this tree is a separate, owner-reviewed decision.
+Apache-2.0 (see [LICENSE](LICENSE)). The project also follows the
+[Open Canopy Contract](OPEN_CANOPY_CONTRACT.md). Public release of this tree is a separate, owner-reviewed decision.
