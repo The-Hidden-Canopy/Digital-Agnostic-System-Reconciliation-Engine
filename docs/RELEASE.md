@@ -39,6 +39,13 @@ acceptance always uses a fresh application workspace. The helper terminates its 
 or failure. The journey is copied alongside synthetic fixtures outside the checkout and accesses
 the installed wheel's UI, not an editable application installation.
 
+For the automated WCAG A/AA gate, install axe-core 4.11.0 as a test-only dependency and set
+`AXE_MODULE` to its module directory, then add `--accessibility` alongside `--browser`. The gate
+requires all nine populated-screen audits to execute and verifies that an intentionally unlabeled
+button fails the audit. `accessibility.json` retains the engine version, passing-rule counts and
+checks that need manual review. No rule, element or result category is excluded to obtain a pass.
+Automated coverage supplements the keyboard journey; it does not replace a screen-reader audit.
+
 ## Evidence and limits
 
 A successful run writes `evidence.json`, build wheels in `dist-1/` and `dist-2/`, input/dependency
@@ -61,7 +68,8 @@ builds are checked separately here. A second operating system or toolchain is a 
 | setuptools | Build only | 80.9.0 | MIT |
 | wheel | Build only | 0.45.1 | MIT classifier |
 | pypdf | Optional PDF extraction | 6.21.2 | BSD-3-Clause |
-| Playwright | Browser tests only | 1.62.1 | Not reviewed in this increment |
+| Playwright | Browser tests only | 1.62.1 | Apache-2.0 package metadata |
+| axe-core | Accessibility tests only | 4.11.0 | MPL-2.0 package metadata |
 | Chromium | Browser tests only | Image or Playwright runtime | Not reviewed in this increment |
 
 The Python wheel hashes are in `tools/release-*-requirements.txt`. These pins are for release

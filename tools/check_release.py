@@ -61,7 +61,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True, help='new directory outside the checkout')
     parser.add_argument('--browser', action='store_true', help='also run the existing Chromium journey from the wheel')
+    parser.add_argument('--accessibility', action='store_true', help='require populated-screen WCAG A/AA automated audits')
     args = parser.parse_args()
+    if args.accessibility and (not args.browser or not os.environ.get('AXE_MODULE')):
+        parser.error('--accessibility requires --browser and AXE_MODULE pointing to axe-core')
+    audit_enabled = bool(args.browser and os.environ.get('AXE_MODULE'))
     out = args.output.resolve()
     if out == ROOT or ROOT in out.parents:
         parser.error('output must be outside the source checkout')
@@ -94,6 +98,7 @@ def main() -> None:
     inputs = [ROOT / 'pyproject.toml', ROOT / 'LICENSE', *sources, *locks,
               ROOT / 'tools/check_release.py', ROOT / 'tools/release_smoke.py',
               ROOT / 'tests/e2e/browser_journey.cjs', *sorted((ROOT / 'fixtures').rglob('*'))]
+    inputs.append(ROOT / 'tests/e2e/accessibility.cjs')
     source_hashes = {str(p.relative_to(ROOT)): digest(p) for p in inputs if p.is_file()}
     python_files = {str(p.relative_to(ROOT / 'src')) for p in sources if p.suffix == '.py'}
     wheels = []
@@ -164,8 +169,16 @@ def main() -> None:
                 journey = smoke_root / 'tests/e2e/browser_journey.cjs'
                 journey.parent.mkdir(parents=True)
                 shutil.copy2(ROOT / 'tests/e2e/browser_journey.cjs', journey)
+                shutil.copy2(ROOT / 'tests/e2e/accessibility.cjs', journey.parent)
                 env['WORKBENCH_URL'] = url
                 run('browser', ['node', journey], cwd=smoke_root)
+                if audit_enabled:
+                    audits = [json.loads(line.removeprefix('accessibility: ')) for line in
+                              (logs / 'browser.log').read_text().splitlines() if line.startswith('accessibility: ')]
+                    expected_pages = {'import', 'review', 'run', 'findings', 'advanced', 'campaign', 'composition', 'export', 'authoring'}
+                    if {a['page'] for a in audits} != expected_pages:
+                        raise RuntimeError('required populated accessibility audits did not all execute')
+                    (out / 'accessibility.json').write_text(json.dumps(audits, indent=2) + '\n')
         finally:
             server.terminate()
             try:
@@ -181,6 +194,7 @@ def main() -> None:
                 'dependency_wheels_sha256': {p.name: digest(p) for p in sorted(wheelhouse.glob('*.whl'))},
                 'checks': {'matching_clean_builds': True, 'package_allowlist': True, 'core_without_extras': True,
                            'offline_cli_four_formats': True, 'installed_ui_http': True,
+                           'automated_accessibility': 'passed' if audit_enabled else 'not_run',
                            'installed_browser_journey': 'passed' if args.browser else 'not_run'},
                 'not_verified': ['other platforms', 'full license/provenance review', 'screen-reader audit',
                                  'jurisdiction source review', 'owner publication review']}

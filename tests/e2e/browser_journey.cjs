@@ -8,6 +8,7 @@
  */
 const path = require('path');
 const assert = require('assert');
+const audit = require('./accessibility.cjs');
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const BASE = process.env.WORKBENCH_URL || 'http://127.0.0.1:8765/';
@@ -29,6 +30,13 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.click('button[type=submit]');
   await page.waitForFunction(() => document.querySelectorAll('tbody tr').length >= 3 && !/QUEUED|PARSING/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
   await page.waitForFunction(() => /PARTIALLY_PARSED/.test(document.querySelector('main').innerText));  // markdown HTML comment stays visible as unsupported
+  await audit(page, 'import');
+  if (process.env.AXE_MODULE) {
+    await page.evaluate(() => { const control = document.createElement('button'); control.id = 'axe-negative-control'; document.body.append(control); });
+    await assert.rejects(() => audit(page, 'negative-control'), /button-name/);
+    await page.evaluate(() => document.getElementById('axe-negative-control').remove());
+    console.log('accessibility negative control: detected');
+  }
 
   // 2. review: approve the six spec claims one by one
   for (const k of KEYS) {
@@ -45,6 +53,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
     await item.click();
     await page.waitForFunction((key) => { const h = document.querySelector('#cand-h'); return h && h.textContent === key; }, k, { timeout: 10000 });
     assert.ok((await page.textContent('mark')).length > 0, 'source token is highlighted');
+    if (k === KEYS[0]) await audit(page, 'review');
     await page.click('button:has-text("Record decision")');
     try {
       await page.waitForFunction((key) => !Array.from(document.querySelectorAll('.list button.item')).some((b) => b.innerText.startsWith(key) && b.innerText.includes('product-spec.md')), k, { timeout: 10000 });
@@ -57,6 +66,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   // 3. run
   await page.goto(BASE + '#/run');
   await page.waitForSelector('summary:has-text("Risk packs")');       // the page renders after several parallel fetches
+  await audit(page, 'run');
   await page.locator('details:has(summary:has-text("Risk packs"))').evaluate((d) => (d.open = true));
   await page.fill('#ctx', 'service.kind = web');
   await page.click('button:has-text("Select all")');                     // must not wipe what is already filled in
@@ -70,6 +80,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   // 4. findings
   await page.waitForSelector('table tbody tr');
   assert.strictEqual(await page.locator('table tbody tr').count(), KEYS.length);
+  await audit(page, 'findings');
   for (const [verdict, n] of Object.entries(EXPECT)) {
     const label = { SUPPORTED: 'Supported', CONTRADICTED: 'Contradicted', INSUFFICIENT_EVIDENCE: 'Insufficient evidence' }[verdict];
     assert.strictEqual(await page.locator('tbody tr', { hasText: label }).count(), n, verdict);
@@ -132,6 +143,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
     assert.strictEqual(stored.schema, 'verifier-lab/laboratory-counterexample/1');
     assert.strictEqual(stored.reduced.case.system, system);
   }
+  await audit(page, 'advanced');
 
   // 4d. campaign page: the real verifier passes; a defective one fails visibly; a forged report is rejected
   await page.goto(BASE + '#/campaign');
@@ -143,6 +155,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.waitForSelector('text=Campaign FAILED');
   await page.click('button:has-text("Forge the passing total")');
   await page.waitForSelector('text=Forged report: REJECTED');
+  await audit(page, 'campaign');
 
   // 4e. purpose assessment from the UI: a torn package (two generations) is CONTRADICTED for the strong purpose
   const PUR = path.resolve(__dirname, '../../fixtures/purposes/') + '/';
@@ -184,6 +197,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.selectOption('#c-target', { label: 'only ancestors of report' });
   await page.waitForSelector('.notice.ok');
   assert.ok((await page.innerText('main')).includes('unresolved, not verified'));
+  await audit(page, 'composition');
 
   // 4g. PDF follows the same review/run path; image-only pages stay visibly partial.
   await page.goto(BASE + '#/import');
@@ -225,6 +239,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.click('button:has-text("Verify with the independent checker")');
   await page.waitForSelector('.notice.ok, .notice.bad');
   assert.strictEqual(await page.textContent('.notice.ok strong'), 'VERIFIED');
+  await audit(page, 'export');
 
   // 5b. A human can propose a claim from prose; source selection stays distinct from evidence.
   const authoredText = 'Résumé: the maximum allowed quantity is one hundred.\n';
@@ -244,6 +259,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.selectOption('#a-kind', 'integer');
   await page.fill('#a-value', '100');
   await page.fill('#a-reason', 'Interpret the written quantity as an exact maximum.');
+  await audit(page, 'authoring');
   await page.click('button:has-text("Create candidate for review")');
   await page.waitForSelector('#cand-h');
   assert.strictEqual(await page.textContent('#cand-h'), 'author.limit');

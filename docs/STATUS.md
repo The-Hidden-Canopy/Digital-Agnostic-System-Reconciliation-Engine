@@ -162,6 +162,16 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   probes supplement malformed-document tests; cancellation and memory-limit errors stay operational.
 * CI installs the required OS packages. See SECURITY.md and RELEASE.md for validated scope.
 
+## Added in increment thirteen (automated accessibility gates)
+
+* The installed-wheel browser journey runs axe-core WCAG 2 A/AA and WCAG 2.1 A/AA checks on
+  import, reviewed candidate, run form, findings, advanced results, campaign, composition, export
+  and source-authoring screens. An intentionally unlabeled button proves the gate can fail.
+* Accessible names on the project summary and source/reproducer text now have explicit region roles.
+* The release checker requires every requested audit to execute, records engine/version and manual
+  review targets, and retains `accessibility.json`. CI installs the pinned test-only audit tool.
+  Incomplete/manual checks remain visible; a screen-reader audit is still outstanding.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
@@ -193,7 +203,6 @@ Campaigns, replay and reduction are implemented as described above, with their s
    byte-identical packages except observation metadata; staleness tests).
 5. Jurisdiction review — **not started**.
 6. Accessibility, recovery, clean-machine install, license review — **partial**: keyboard path, skip link, focus handling,
-   `aria-live` status and non-colour verdict labels are in place and smoke-tested; **no screen-reader or automated audit
-   was run**; repeatable installed-wheel acceptance and build comparison are available for Linux/Python 3.12;
+   `aria-live` status and non-colour verdict labels are in place and smoke-tested; **no screen-reader audit was run**; automated WCAG A/AA checks cover nine populated screens; repeatable installed-wheel acceptance and build comparison are available for Linux/Python 3.12;
    a dependency metadata inventory exists, but **full dependency/provenance/license review remains open**.
 7. Owner review before publication — **pending**.

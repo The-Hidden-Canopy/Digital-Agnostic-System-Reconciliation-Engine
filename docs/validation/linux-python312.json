@@ -1,0 +1,373 @@
+{
+  "accessibility": [
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [],
+      "page": "import",
+      "passed_rules": 26
+    },
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [
+        {
+          "id": "color-contrast",
+          "targets": [
+            [
+              "#d-reason"
+            ]
+          ]
+        }
+      ],
+      "page": "review",
+      "passed_rules": 27
+    },
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [],
+      "page": "run",
+      "passed_rules": 25
+    },
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [
+        {
+          "id": "color-contrast",
+          "targets": [
+            [
+              "span:nth-child(1) > .b-ok.badge > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "span:nth-child(2) > .b-bad.badge > span[aria-hidden=\"true\"]"
+            ],
+            [
+              ".b-info.badge > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(1) > td:nth-child(1) > .b-ok.badge > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(2) > td:nth-child(1) > .b-ok.badge > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(3) > td:nth-child(1) > .b-ok.badge > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "td:nth-child(1) > .b-bad.badge > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(5) > td:nth-child(1) > .b-ok.badge > span[aria-hidden=\"true\"]"
+            ]
+          ]
+        }
+      ],
+      "page": "findings",
+      "passed_rules": 25
+    },
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [
+        {
+          "id": "color-contrast",
+          "targets": [
+            [
+              "pre[aria-label=\"Reduced case\"]"
+            ]
+          ]
+        }
+      ],
+      "page": "advanced",
+      "passed_rules": 27
+    },
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [],
+      "page": "campaign",
+      "passed_rules": 27
+    },
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [
+        {
+          "id": "color-contrast",
+          "targets": [
+            [
+              "text[x=\"18\"]"
+            ],
+            [
+              "text[x=\"228\"]"
+            ],
+            [
+              "tr:nth-child(1) > td:nth-child(3) > .badge.b-ok > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(2) > td:nth-child(3) > .badge.b-ok > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(1) > td:nth-child(2) > .badge.b-ok > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(2) > td:nth-child(2) > .badge.b-ok > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(3) > td:nth-child(2) > .badge.b-ok > span[aria-hidden=\"true\"]"
+            ],
+            [
+              "tr:nth-child(4) > td:nth-child(2) > .badge.b-ok > span[aria-hidden=\"true\"]"
+            ]
+          ]
+        }
+      ],
+      "page": "composition",
+      "passed_rules": 28
+    },
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [],
+      "page": "export",
+      "passed_rules": 24
+    },
+    {
+      "engine": {
+        "name": "axe-core",
+        "version": "4.11.0"
+      },
+      "manual_review": [
+        {
+          "id": "color-contrast",
+          "targets": [
+            [
+              "#a-source"
+            ],
+            [
+              "#a-reason"
+            ]
+          ]
+        }
+      ],
+      "page": "authoring",
+      "passed_rules": 29
+    }
+  ],
+  "checks": {
+    "automated_accessibility": "passed",
+    "core_without_extras": true,
+    "installed_browser_journey": "passed",
+    "installed_ui_http": true,
+    "matching_clean_builds": true,
+    "offline_cli_four_formats": true,
+    "package_allowlist": true
+  },
+  "dependency_wheels_sha256": {
+    "pypdf-6.21.2-py3-none-any.whl": "1d44d1a3a200f25062adff0085b02040e4646431ac2ccac22e42679e91466084",
+    "setuptools-80.9.0-py3-none-any.whl": "062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922",
+    "wheel-0.45.1-py3-none-any.whl": "708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248"
+  },
+  "evidence_scope": "Local Linux/Python 3.12 run on the identified source bytes before commit. Dirty source state is intentional; input hashes identify the tested implementation. Remote CI, screen-reader review and publication are not implied.",
+  "not_verified": [
+    "other platforms",
+    "full license/provenance review",
+    "screen-reader audit",
+    "jurisdiction source review",
+    "owner publication review"
+  ],
+  "platform": "linux",
+  "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "python_test_suite": {
+    "executed": 365,
+    "failed": 0,
+    "passed": 365
+  },
+  "source_commit": "7be6705af876f1c980c7f279d142673451bdf583",
+  "source_date_epoch": "1761004800",
+  "source_inputs_sha256": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "fixtures/README.md": "a5706845c7d113a96f6c96221709da761f7e133b7726464d06b1c6bd9d59d4dc",
+    "fixtures/composition/README.md": "7c78804a08c6402b7fb23cb7d73a172035330d94c75db0140b074c334e2fb622",
+    "fixtures/composition/cycle.json": "ee873f4b2ceb858035c5b46cc02e4f3f8ba13dcfff39f1a64e3364f20f1f804d",
+    "fixtures/composition/generation-mismatch.json": "a31e8827c72c8c5d82cf3ea9f41ea212f733c3572af1b20a0317e5ff16e86516",
+    "fixtures/composition/good.json": "af6c839d74631af9d2468e89201d13809fcb787fff3dc97580de2e79be297bcc",
+    "fixtures/composition/missing-input.json": "e5f5a9b47ea298f9fa351b5bc160e721e533f9b8d945d7a3649ee15b07192438",
+    "fixtures/composition/offsets-mismatch.json": "55d46b836bc2fb23e3799a242fcc9dc41459341275b38e12226d01cc4fab4a6c",
+    "fixtures/composition/scoped.json": "418672a7435005707dda4d0780175a4899247420c7180526f4e0bf15cc1cb363",
+    "fixtures/composition/units-bad-conversion.json": "821e8f22bb1970f3340a85dd54491edf9647e6550603f477ec9db52993894dcb",
+    "fixtures/composition/units-converted.json": "a7c23766e8ccc74ea43dd25fa9e289f249b18b744c15ec79573295ccd6361b65",
+    "fixtures/composition/units-mismatch.json": "2f1d941aec8597b271b0ac210f9911aecf5b4e41794107ac9bf6bd0c8b1cd1f6",
+    "fixtures/purposes/README.md": "567e4e2c14989ccd9c366db89dab293022dae8c69196bda264e5a9f8dba2801c",
+    "fixtures/purposes/counters-bad-type.json": "5a5dd67174857b7256c0e8a0ee05d026606e8d169fbcec7c52518275babb78df",
+    "fixtures/purposes/counters-g6.json": "8825bba3f6d760ec01aae0e4b427c7decd8e926f1670217a9d406897016280e4",
+    "fixtures/purposes/counters.json": "86f94b427bb7adf5a306f296f8f45a72a00079e0bca2c7a9045ce92232183e43",
+    "fixtures/purposes/history-invalidated.json": "9652b97a22da0962c5fddcaff089aa403f03e2be6af0d9a192adb571e1a5be46",
+    "fixtures/purposes/history-no-persist.json": "36d918e55569a070b83c55d5e03e4d384b4acc4188d556769a8c4ef7205f0262",
+    "fixtures/purposes/history-other-clock.json": "84ca2cafd89159b106d2be49d05118453e973c9341af2f6a10df79759daf5797",
+    "fixtures/purposes/history.json": "0ec66344482a28271ce3a1b58d3bfe3cf74b4df845175579689e4637b3b245f5",
+    "fixtures/purposes/map.json": "1008767415c82530f22071dd39eaa4151a6fbbf9def3ee1e7c997faf1eac54f2",
+    "fixtures/tutorial/ops-note.pdf": "8609ed11070c0946df8f680769f50cc47c842497efcc2a8c9d1867f8319d9e62",
+    "fixtures/tutorial/product-spec.md": "5a7f8e455e6398000090ccccd4d407024de3662962b311388d2db6a61aca5a05",
+    "fixtures/tutorial/schema.sql": "473bc16cf32e55291928dcdf7b4c4b5dda636b1c7eb250c5a6121b15a5367830",
+    "fixtures/tutorial/service-config.json": "fd0a10844519fe3aae92c75cdf02d6fdbaa53d02a4591e8b6e8c58a1b0c0d5cb",
+    "pyproject.toml": "0531519b356fc13f63aa75a08b74cc0e15e15a77656a93bf0c917d7d382e81d4",
+    "src/verifier_lab/__init__.py": "af45dab5945997cec5b16990f75bc195ce97e32551719cf054d146fdca314cb6",
+    "src/verifier_lab/campaign_checker.py": "5742fa157f174374d99ff60966e5fa09b802d954520b88d6b983259daff06992",
+    "src/verifier_lab/canonical.py": "94919ca3d33af76d527d9c54a9c18d8f6e6c7ec44f37eb77b8edbcabbc8799aa",
+    "src/verifier_lab/checker.py": "947a54f87fd375ce0ce003179dc14b11163f8eff9059057ab77150210cfde0df",
+    "src/verifier_lab/cli.py": "7172ca502e1cb4b15966c6b35f751a01e5bb337cfb6eaa67a0af4675a049931e",
+    "src/verifier_lab/composition.py": "46720529d78fc4afe2682fb66d383d1c87a68a988e5fd81e5452f50a991cbf5a",
+    "src/verifier_lab/detstream.py": "8d6aeef92c85337bc3eeecdf1cd0bbad0bbb683f2128ee9fbbd5f8a4dbc20504",
+    "src/verifier_lab/engine.py": "c636c892ba1c1217cda96bd40f4b74f9d8fe3715830ac851096f960036909aed",
+    "src/verifier_lab/experiments/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/verifier_lab/experiments/checkpoint.py": "29f3301299e60f04190cc036a24049d0d41214ddcf0d833f9e9009af36c7f578",
+    "src/verifier_lab/experiments/crash.py": "b9c772e8834f40b11971cdc9e73179548a1223da118488b4d7b318bf300c0d0b",
+    "src/verifier_lab/experiments/history.py": "7d4716d13d1ef982c8716adbe22f9ffed6d6c7f416c46f9d4d633a5380d37bb5",
+    "src/verifier_lab/experiments/laboratory.py": "2e9c79a956b655c1895271ea993a09545182eb88e7fdfc07f497eeac010964e9",
+    "src/verifier_lab/experiments/package.py": "e9b9728665511dfb017c31d04e3305983340fe5419446bde53e22596098f4d1d",
+    "src/verifier_lab/export.py": "4b15154aff1cac2e4527fce007e51a9888e3171446ceedd84ccac5976a358871",
+    "src/verifier_lab/graph.py": "a586e7f783cc445a8993b167ca207598d9bcd46c3d0b9107ca298c8575d873d8",
+    "src/verifier_lab/harness/__init__.py": "fbffce1eb151d052b9b053c144e73a6c0ecc14a2901480a190acc6148fd0fc95",
+    "src/verifier_lab/harness/campaign.py": "de167174b90593b06e65b0c1ad94e3d9c0bb93c55bdc3c39307c814e4f1b93fa",
+    "src/verifier_lab/harness/external_kernel.py": "136e4ec85d3397f37608fceef1f0150705d3682c96ddb1ceee549c29600f955d",
+    "src/verifier_lab/harness/metamorphic.py": "32ed8370c38a2bba5a277d8ca1dd47d51bcad053c154bb186f0ebfd7e96810b9",
+    "src/verifier_lab/harness/mutation.py": "7b9d591e3a9766195322076553fc4ecc3c38375b1321507cfea0e61c296a710c",
+    "src/verifier_lab/harness/world.py": "df57915af74a7068a7417dc9a2830a58cd4d5c76a6a53ed17afecb0c27656748",
+    "src/verifier_lab/ingestion/__init__.py": "f875fc25aa2106296dd6fd79f5334f1d371141f891859f9f10139a448a8b905a",
+    "src/verifier_lab/ingestion/adapters/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/verifier_lab/ingestion/adapters/json_adapter.py": "ed57ef68fd7ad31ff548e9dfcfc0c7b0d87bdee1d468ef4cfd9dc75665630a9a",
+    "src/verifier_lab/ingestion/adapters/markdown_adapter.py": "2303297508e0c6fc659cfde8e7783a71d43623b3d21fad8658cf5e67572f40e5",
+    "src/verifier_lab/ingestion/adapters/pdf_adapter.py": "5c426c3b09f73f4ffd6fb0b67d628bf50d84672fb36fb85d229152e235273452",
+    "src/verifier_lab/ingestion/adapters/sql_adapter.py": "e8beb1549871d9aa0dcffc26488f724b6881615c249b55402a89e3b8c1f8992f",
+    "src/verifier_lab/ingestion/admit.py": "f0487c448e5ecd95ab6b9843011cec95720bebaef1b9b364aeefff614919ba80",
+    "src/verifier_lab/ingestion/common.py": "92619431af2b55a81e75543db534fd68c4a0759f1842eebcac7d87afd9e5eeba",
+    "src/verifier_lab/ingestion/extract.py": "29be65284db59ca1d6c2e5074dd5a8e8d6ebb3a48b3f896d569e6a19fdb4af94",
+    "src/verifier_lab/ingestion/isolation.py": "2db4f68ea13dc5c19377b98cb2ecc4478af9cd9c7c2cc522325f2669ac81e5e1",
+    "src/verifier_lab/ingestion/values.py": "30c00be678b2fddbc319dc4361ab51e7b23376f97d4323a0ef96107b685482a6",
+    "src/verifier_lab/ingestion/worker.py": "017e0eef2696499f9dd14ae171836725d1f4be7a01386ccd037966492306eac2",
+    "src/verifier_lab/minimize.py": "5cd7328fd66dbe380decb1f135a555c9f113e9241d4d3d0a849e2ce8ff999c68",
+    "src/verifier_lab/model.py": "d573dec9a3dccb0ca9f35c1802ac580f02a09d4011815af3dc8ac675470adbf4",
+    "src/verifier_lab/purposes.py": "f1127f346ab42c1c5d45fbdf9ea28fe0ae300094bccdca3e0de6af76a5dc672d",
+    "src/verifier_lab/purposes_data/inspect-checkpoint.json": "fc61fffbc5fe8563edbbd9ebf1a9ad5844723e10c0977d861fedb79c8b196b7f",
+    "src/verifier_lab/purposes_data/resume-exactly.json": "79f0008f24e8a9519d314e4c5de7f9afb46b8fbe95e38c82274c149009d1873c",
+    "src/verifier_lab/reducers/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/verifier_lab/reducers/graph.py": "7d992e06751adc97a515ffa9b5493fe6bf5fd79f5606a56c28d1f89faf69345e",
+    "src/verifier_lab/reducers/sequence.py": "fa4a5f568ba8b8383d26a24cac524debd9f10f7b9100a0a247906582b593af4b",
+    "src/verifier_lab/reducers/values.py": "094801e94bc10a437cb75902429efe4bc6bcd851b4c7456ec31773ecdc49e148",
+    "src/verifier_lab/replay.py": "3d71fb65d5b99841b40388739fe4209fdddb124e395c2538a6f47959c59af86e",
+    "src/verifier_lab/riskpacks.py": "e114716ff8bf926ccb5f1a766bf10997e83dfefd3b5b84c538fb054ca7d09770",
+    "src/verifier_lab/riskpacks_data/synthetic-upload-controls.json": "f5e8ff452a259589da2413fc4ab30cbcbe638d78570805b5734b33a46ebceb28",
+    "src/verifier_lab/rules.py": "245d68f43b60d0c8460c63358a25503253a25737fb7213fea10fd834e1caadc5",
+    "src/verifier_lab/server.py": "25d150f4df4bb9a5b27d66cc702248deec7094d959193b107a2a848f26210c8e",
+    "src/verifier_lab/service.py": "607ef7f435245b5ed65ee55710311f535939ddfae3e6f7cea865f0680f354dd0",
+    "src/verifier_lab/store.py": "a54c65b63a879bca44051c4a1be5cd5de8304704d8bda1440938be53f577b1fb",
+    "src/verifier_lab/subjects/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/verifier_lab/subjects/candidate_store.py": "7c4515ab4591d47037ded4be966f4067bf04ed5c13c88535f7ba71701057cf47",
+    "src/verifier_lab/subjects/external.py": "ef5c0e9a8032bef47290b8fb7fd73d5532ff1480676e64032d74b543f01112b6",
+    "src/verifier_lab/subjects/pipeline.py": "bc2c8684a9122cc9ca8e4ff43a8254bdcc1b214666a9c45aa74341b4fbcaa653",
+    "src/verifier_lab/subjects/reference_store.py": "0d69fa414f512c9351d4593d95bf710efa987a4184440b05c6567c2852a3b20b",
+    "src/verifier_lab/subjects/scheduler.py": "ced09bd8faa3f0358cdd835ddb4b61816df272ff6d4ea21392d2906bb13fdace",
+    "src/verifier_lab/temporal.py": "8ac846b5c532e2e9f274dc0ff2dbeaa33fd2676d1833304f4da519cf7b6e59a0",
+    "src/verifier_lab/validation.py": "efe14c70334b307d2a886a2a8db3bf9e556c3fd1f725498eb0529a61e266c55f",
+    "src/verifier_lab/web/app.js": "2a7ea41f67f63cadc9478aeead2b13d3b1265d1dcbe5594d47066490dd280af0",
+    "src/verifier_lab/web/index.html": "f9434f075a27f67a7187a5d4887c31a3481c491163de96bf7d4858f529c0b6a5",
+    "src/verifier_lab/web/style.css": "e392351f49742dc3d362aa5db08b559f380b1319a4083869846a4a8083d70eeb",
+    "tests/e2e/accessibility.cjs": "5029a0d2a7d8d72938cff95a0eef8ba5a98f22d094310e739f71d0da34a7c500",
+    "tests/e2e/browser_journey.cjs": "6bc910f99f057034cfe59051795b0633598a9594cd82444d35402bdacedceecc",
+    "tools/check_release.py": "b83aa6c66b25cce536bb0bfa9ba21fa312de077087beafb34e39e6f004e6fd7c",
+    "tools/release-build-requirements.txt": "3ef80254e8c8759e524a0774bea6ed69fbc1fee9232ec17972bdb442a6306dec",
+    "tools/release-pdf-requirements.txt": "73582754e0d1033f26ec0adaa82bab7587de810b23a4557ffd2bb9d74d8be80f",
+    "tools/release_smoke.py": "1eb566e6d63256740be33aa5c77434e4a0223535289cd961df842c0c8cfe67a6"
+  },
+  "source_tree_dirty": true,
+  "wheel": "verifier_lab-0.1.0-py3-none-any.whl",
+  "wheel_contents": [
+    "verifier_lab-0.1.0.dist-info/METADATA",
+    "verifier_lab-0.1.0.dist-info/RECORD",
+    "verifier_lab-0.1.0.dist-info/WHEEL",
+    "verifier_lab-0.1.0.dist-info/entry_points.txt",
+    "verifier_lab-0.1.0.dist-info/licenses/LICENSE",
+    "verifier_lab-0.1.0.dist-info/top_level.txt",
+    "verifier_lab/__init__.py",
+    "verifier_lab/campaign_checker.py",
+    "verifier_lab/canonical.py",
+    "verifier_lab/checker.py",
+    "verifier_lab/cli.py",
+    "verifier_lab/composition.py",
+    "verifier_lab/detstream.py",
+    "verifier_lab/engine.py",
+    "verifier_lab/experiments/__init__.py",
+    "verifier_lab/experiments/checkpoint.py",
+    "verifier_lab/experiments/crash.py",
+    "verifier_lab/experiments/history.py",
+    "verifier_lab/experiments/laboratory.py",
+    "verifier_lab/experiments/package.py",
+    "verifier_lab/export.py",
+    "verifier_lab/graph.py",
+    "verifier_lab/harness/__init__.py",
+    "verifier_lab/harness/campaign.py",
+    "verifier_lab/harness/external_kernel.py",
+    "verifier_lab/harness/metamorphic.py",
+    "verifier_lab/harness/mutation.py",
+    "verifier_lab/harness/world.py",
+    "verifier_lab/ingestion/__init__.py",
+    "verifier_lab/ingestion/adapters/__init__.py",
+    "verifier_lab/ingestion/adapters/json_adapter.py",
+    "verifier_lab/ingestion/adapters/markdown_adapter.py",
+    "verifier_lab/ingestion/adapters/pdf_adapter.py",
+    "verifier_lab/ingestion/adapters/sql_adapter.py",
+    "verifier_lab/ingestion/admit.py",
+    "verifier_lab/ingestion/common.py",
+    "verifier_lab/ingestion/extract.py",
+    "verifier_lab/ingestion/isolation.py",
+    "verifier_lab/ingestion/values.py",
+    "verifier_lab/ingestion/worker.py",
+    "verifier_lab/minimize.py",
+    "verifier_lab/model.py",
+    "verifier_lab/purposes.py",
+    "verifier_lab/purposes_data/inspect-checkpoint.json",
+    "verifier_lab/purposes_data/resume-exactly.json",
+    "verifier_lab/reducers/__init__.py",
+    "verifier_lab/reducers/graph.py",
+    "verifier_lab/reducers/sequence.py",
+    "verifier_lab/reducers/values.py",
+    "verifier_lab/replay.py",
+    "verifier_lab/riskpacks.py",
+    "verifier_lab/riskpacks_data/synthetic-upload-controls.json",
+    "verifier_lab/rules.py",
+    "verifier_lab/server.py",
+    "verifier_lab/service.py",
+    "verifier_lab/store.py",
+    "verifier_lab/subjects/__init__.py",
+    "verifier_lab/subjects/candidate_store.py",
+    "verifier_lab/subjects/external.py",
+    "verifier_lab/subjects/pipeline.py",
+    "verifier_lab/subjects/reference_store.py",
+    "verifier_lab/subjects/scheduler.py",
+    "verifier_lab/temporal.py",
+    "verifier_lab/validation.py",
+    "verifier_lab/web/app.js",
+    "verifier_lab/web/index.html",
+    "verifier_lab/web/style.css"
+  ],
+  "wheel_sha256": "02fefe8dca0fbbbd0c04574468da35aadbcee193f254b25a5b6e8970a83ec694"
+}

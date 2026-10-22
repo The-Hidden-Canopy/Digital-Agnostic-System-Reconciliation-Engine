@@ -196,7 +196,7 @@ async function sourceDetail(id) {
       (s.blocked_keys || []).length ? h("div", { class: "notice warn" }, h("strong", { text: "Withheld keys (duplicate definitions are never resolved silently): " }), s.blocked_keys.map((b) => b.key).join(", ")) : null,
       h("h3", { text: "Text rendition (inert - never rendered as markup)" }),
       t.truncated ? h("p", { class: "muted", text: "Showing the first part only." }) : null,
-      h("pre", { class: "src", tabIndex: 0, "aria-label": "Source text", text: t.text || t.note }),
+      h("pre", { class: "src", role: "region", tabIndex: 0, "aria-label": "Source text", text: t.text || t.note }),
       s.attempt && s.attempt.state === "EXTRACTED" && !s.superseded_by && t.text ? authorForm(s, t.text) : null));
     $("#src-h").focus();
   } catch (e) { put(box, errorBox(e)); }
@@ -320,7 +320,7 @@ async function candidateDetail(id) {
       !c.current ? h("div", { class: "notice warn", text: "This candidate belongs to a superseded extraction and can no longer be decided." }) : null,
       (c.qualifiers || []).length ? h("div", { class: "notice warn" }, h("strong", { text: "Unresolved qualifiers: " }), c.qualifiers.join(", ")) : null,
       h("h3", { text: "Source evidence" }),
-      sp ? [h("pre", { class: "src", tabIndex: 0, "aria-label": "Source evidence with highlighted token" }, sp.before, h("mark", { text: sp.text }), sp.after),
+      sp ? [h("pre", { class: "src", role: "region", tabIndex: 0, "aria-label": "Source evidence with highlighted token" }, sp.before, h("mark", { text: sp.text }), sp.after),
         h("p", { class: "muted" }, `Extraction: ${sp.extraction_method}. Extraction confidence: ${sp.extraction_confidence ?? "not provided by this extractor"} (extraction confidence is not confidence in truth).`),
         h("details", {}, h("summary", { text: "Exact locator" }), h("pre", { class: "src", text: JSON.stringify({ span: sp.span_id, artifact: sp.artifact_hash, rendition: sp.rendition_hash, locator: sp.locator }, null, 2) }))]
         : h("p", { class: "muted", text: "The span is unavailable." }),
@@ -668,7 +668,7 @@ async function viewAdvanced() {
     ? h("div", { class: "notice warn", text: `Nothing to reduce: ${r.status} - ${r.stop_reason}` })
     : [h("div", { class: "notice " + (r.fresh_process_verification === "VERIFIED" ? "ok" : "bad") }, h("strong", { text: `${r.original_units} → ${r.reduced_units} operations` }),
         ` in ${r.oracle_calls} oracle calls. Fresh-process reproduction: ${r.fresh_process_verification}.`),
-      h("p", { text: r.scope }), h("pre", { class: "src", tabIndex: 0, "aria-label": "Reduced case", text: JSON.stringify(r.reduced_case, null, 2) }),
+      h("p", { text: r.scope }), h("pre", { class: "src", role: "region", tabIndex: 0, "aria-label": "Reduced case", text: JSON.stringify(r.reduced_case, null, 2) }),
       h("p", { class: "muted", text: `Failure signature: ${r.signature.witness_class} (${r.signature.reason_code}). The package contains the full reduction log.` }),
       r.package ? h("button", { text: "Download counterexample", onclick: () => {
         const url = URL.createObjectURL(new Blob([JSON.stringify(r.package)], { type: "application/json" }));
@@ -695,7 +695,7 @@ async function viewAdvanced() {
         h("button", { text: "Minimize the failure", onclick: () => run(system.value === "store" ? "minimize" : "laboratory-minimize", body(), showMin) }))),
     h("div", { class: "card" }, h("h2", { text: "Test your own program" }),
       h("p", {}, "The same experiments and minimizer can run against a program you supply, speaking a small JSON-lines protocol over stdin/stdout. Because that executes software, it is configured on the command line only - this page never accepts a command, and a counterexample package never causes one to run."),
-      h("pre", { class: "src", tabIndex: 0, "aria-label": "Command line example", text: [
+      h("pre", { class: "src", role: "region", tabIndex: 0, "aria-label": "Command line example", text: [
         "verifier-lab experiment checkpoint --subject-cmd \"python3 examples/reference_subject.py\" --ops 120",
         "verifier-lab minimize --subject-cmd \"python3 my_subject.py\" --output case.json",
         "verifier-lab verify-counterexample case.json --subject-cmd \"python3 my_subject.py\"   # identity must match" ].join("\n") }),
