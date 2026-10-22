@@ -26,13 +26,17 @@ class ParserIsolation(unittest.TestCase):
                 patch('verifier_lab.ingestion.isolation.sys.platform', 'linux'), \
                 patch('verifier_lab.ingestion.isolation.shutil.which', return_value='/usr/bin/bwrap'), \
                 patch('verifier_lab.ingestion.isolation.sysconfig.get_config_var',
-                      side_effect=lambda name: '/runner/python/lib' if name == 'LIBDIR' else None), \
+                      side_effect=lambda name: {
+                          'LIBDIR': '/runner/python/lib',
+                          'LIBPL': '/runner/python/config',
+                      }.get(name)), \
                 patch('verifier_lab.ingestion.isolation.Path.resolve', return_value=Path('/resolved')):
             argv = command(['python', '-c', 'pass'], '/app/src', 'required')
         bindings = [argv[i + 1].replace('\\', '/') for i, value in enumerate(argv[:-1]) if value == '--ro-bind']
         self.assertIn('/runner/python', bindings)
         self.assertIn('/alias/python', bindings)
         self.assertIn('/runner/python/lib', bindings)
+        self.assertNotIn('/runner/python/config', bindings)
         library_path_index = argv.index('LD_LIBRARY_PATH')
         self.assertIn('/runner/python/lib', argv[library_path_index + 1].replace('\\', '/'))
 

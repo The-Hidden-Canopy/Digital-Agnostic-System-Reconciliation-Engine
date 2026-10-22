@@ -41,7 +41,7 @@ def command(argv: list[str], package_root: str, mode: str) -> list[str]:
     # on the container's ld cache to know a runner-provided Python install.
     runtime_library_dirs = {
         path
-        for value in (sysconfig.get_config_var('LIBDIR'), sysconfig.get_config_var('LIBPL'))
+        for value in (sysconfig.get_config_var('LIBDIR'),)
         if value
         for path in (Path(value), Path(value).resolve())
     }
