@@ -70,8 +70,8 @@ def positive_overlap(a: Activity, b: Activity) -> Tri:
         return Tri.UNKNOWN
     if max(a.start.hi, b.start.hi) < min(a.end.lo, b.end.lo):
         return Tri.YES
-    if a.end.hi <= b.start.lo or b.end.hi <= a.start.lo:
-        return Tri.NO
+    if max(a.start.lo, b.start.lo) >= min(a.end.hi, b.end.hi):
+        return Tri.NO                           # no assignment of possible values yields positive overlap
     return Tri.UNKNOWN
 
 

@@ -443,7 +443,7 @@ class IntervalWorkflow(WorkspaceCase):
         self.assertTrue(result["graph"]["acyclic"] and result["graph"]["closed"])
         check = verify_package(z)
         self.assertEqual(check["status"], "VERIFIED")
-        self.assertEqual([u["rule"] for u in check["unsupported"]], ["rule.interval_relation@1"])   # visible, not silently trusted
+        self.assertEqual(check["unsupported"], [])          # the checker re-derives this family independently
 
     def test_bad_interval_edit_rejected_at_review(self):
         spec = self.imp(self.SPEC, "sched.md")

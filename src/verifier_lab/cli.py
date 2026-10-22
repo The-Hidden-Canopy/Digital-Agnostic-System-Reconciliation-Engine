@@ -25,6 +25,53 @@ def _err(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+def _experiments(args) -> int:
+    from .experiments import crash as crash_mod
+    from .experiments.checkpoint import ExperimentCase, run_experiment
+    from .experiments.history import generate_history
+    from .experiments.package import (CheckpointOracle, build_package, verify_package_fresh_process, write_package)
+    from .minimize import ReductionBudget, minimize
+    from .reducers.sequence import DeleteTransactionMembers, DeleteUnits
+    from .reducers.values import SimplifyValues
+    from .subjects.candidate_store import DEFECTS
+    if args.cmd == "verify-counterexample":
+        res = verify_package_fresh_process(Path(args.package))
+        _out(res)
+        return OK if res["status"] == "VERIFIED" else REJECTED
+    if args.cmd == "experiment" and args.kind == "crash":
+        res = crash_mod.crash_experiment(args.writer_defect, tuple(args.defect), args.max_positions)
+        _out(res.to_dict())
+        return OK if res.passed else ATTENTION
+    bad = [d for d in args.defect if d not in DEFECTS]
+    if bad:
+        _err(f"unknown defect(s) {bad}; known: {list(DEFECTS)}")
+        return INVALID
+    ops = generate_history(args.seed, args.ops)
+    boundary = args.ops // 2 if args.boundary is None else args.boundary
+    case = ExperimentCase(args.seed, tuple(ops), boundary, tuple(args.defect))
+    if args.cmd == "experiment":
+        res = run_experiment(case)
+        _out({"case": case.identity(), **res.to_dict()})
+        return OK if res.passed else ATTENTION
+    out = Path(args.output)
+    if out.exists():
+        _err(f"refusing to overwrite {out}")
+        return INVALID
+    reducers = [DeleteUnits(), DeleteTransactionMembers(), SimplifyValues()]
+    result = minimize(case, CheckpointOracle(), reducers, ReductionBudget(max_oracle_calls=args.max_oracle_calls))
+    if result.status in ("NOT_REPRODUCED", "UNSTABLE"):
+        _err(f"nothing to minimize: {result.stop_reason}")
+        _out({"status": result.status, "reproduction_outcomes": result.reproduction_outcomes})
+        return INVALID
+    pkg = build_package(result, reducers)
+    write_package(pkg, out)
+    verdict = verify_package_fresh_process(out)
+    _out({"status": result.status, "original_units": len(case.ops), "reduced_units": len(result.best.ops),
+          "oracle_calls": result.oracle_calls, "scope": pkg["reduction"]["scope"],
+          "fresh_process_verification": verdict["status"], "package": str(out)})
+    return OK if verdict["status"] == "VERIFIED" else REJECTED
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="verifier-lab", description=__doc__.split("\n\n")[0])
     ap.add_argument("--workspace", default=".workspace", help="local workspace directory (default: .workspace)")
@@ -51,6 +98,23 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--output", required=True)
     s = sub.add_parser("verify-package", help="independently verify an exported package (dir or zip)")
     s.add_argument("package")
+    s = sub.add_parser("experiment", help="run a replay/checkpoint or crash experiment on the reference store")
+    s.add_argument("kind", choices=["checkpoint", "crash"])
+    s.add_argument("--seed", default="seed-1")
+    s.add_argument("--ops", type=int, default=60)
+    s.add_argument("--boundary", type=int, default=None, help="checkpoint position (default: half)")
+    s.add_argument("--defect", action="append", default=[], help="inject a named defect (positive control)")
+    s.add_argument("--writer-defect", default=None)
+    s.add_argument("--max-positions", type=int, default=None)
+    s = sub.add_parser("minimize", help="reduce a failing checkpoint experiment to a small verified reproducer")
+    s.add_argument("--seed", default="seed-1")
+    s.add_argument("--ops", type=int, default=120)
+    s.add_argument("--boundary", type=int, default=None)
+    s.add_argument("--defect", action="append", required=True)
+    s.add_argument("--max-oracle-calls", type=int, default=3000)
+    s.add_argument("--output", required=True)
+    s = sub.add_parser("verify-counterexample", help="reproduce a counterexample package in a fresh process")
+    s.add_argument("package")
     s = sub.add_parser("validate", help="structurally validate a bundle.json")
     s.add_argument("bundle")
     args = ap.parse_args(argv)
@@ -60,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         res = verify_package(Path(args.package))
         _out(res)
         return OK if res["status"] == "VERIFIED" else REJECTED
+    if args.cmd in ("experiment", "minimize", "verify-counterexample"):
+        return _experiments(args)
     if args.cmd == "validate":
         bundle, diags = parse_bundle(Path(args.bundle).read_bytes())
         _out({"valid": bundle is not None, "bundle_id": bundle.bundle_id if bundle else None,

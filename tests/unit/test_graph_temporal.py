@@ -176,3 +176,36 @@ class IntervalRule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProducerCheckerDifferential(unittest.TestCase):
+    """Producer (temporal.py) and checker (own corner-case formulation) must agree on random cases."""
+
+    def test_random_interval_cases_agree(self):
+        import json
+        from verifier_lab import checker
+        rng = random.Random(7)
+        n_by_verdict = {}
+        for _ in range(400):
+            doc, obs = {}, []
+            for name in ("a", "b"):
+                s0 = rng.randint(0, 8)
+                e0 = s0 + rng.randint(0, 6)
+                rec = {"start": s0, "end": e0}
+                if rng.random() < 0.5:        # uncertain bounds around the point values
+                    rec = {"start_min": s0 - rng.randint(0, 2), "start_max": s0 + rng.randint(0, 2),
+                           "end_min": e0 - rng.randint(0, 2), "end_max": e0 + rng.randint(0, 2)}
+                if rng.random() < 0.1:
+                    rec.pop(next(iter(rec)))   # drop a bound: must not be guessed
+                doc[name] = rec
+            lab = Lab({"s": ("json", json.dumps(doc).encode())})
+            args = {"left": "a", "right": "b", "relation": rng.choice(["precedes", "no_overlap", "overlaps"]), "coord": "s"}
+            f = one(lab, lab.claim("interval.relation", "x", args))
+            for name, rec in doc.items():
+                for k, v in rec.items():
+                    obs.append({"key": f"{name}.{k}", "value": {"kind": "integer", "value": str(v)}})
+            verdict, reason, _ = checker._rederive_interval(args, obs, [], [])
+            self.assertEqual((f.verdict.value, f.reason_code), (verdict, reason), (doc, args))
+            n_by_verdict[verdict] = n_by_verdict.get(verdict, 0) + 1
+        for v in ("SUPPORTED", "CONTRADICTED", "INSUFFICIENT_EVIDENCE"):
+            self.assertGreater(n_by_verdict.get(v, 0), 10, n_by_verdict)     # the generator actually exercises every outcome

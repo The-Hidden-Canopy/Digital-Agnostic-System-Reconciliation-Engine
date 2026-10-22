@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 KNOWN_RULES = {("rule.fact_equals", "1"): "fact.equals",
                ("rule.fact_numeric_bound", "1"): "fact.numeric_bound",
                ("rule.fact_present", "1"): "fact.present",
+               ("rule.interval_relation", "1"): "interval.relation",
                ("dispatch.unsupported", "1"): None}
 EXTRACTION_MEDIA = "application/vnd.verifier-lab.extraction-record+json"
 PROVENANCE_MEDIA = "application/vnd.verifier-lab.claim-provenance+json"
@@ -423,7 +424,8 @@ def _rederive(claim, predicate, arts, records, files):
             return "NOT_APPLICABLE", "reviewer_applicability_decision", []
         if not (isinstance(ap, dict) and ap.get("decision") == "APPLICABLE"):
             return "INVALID_EVIDENCE", "malformed_claim_arguments", []
-    allowed = {"fact.equals": {"expected"}, "fact.numeric_bound": {"op", "bound"}, "fact.present": set()}[predicate]
+    allowed = {"fact.equals": {"expected"}, "fact.numeric_bound": {"op", "bound"}, "fact.present": set(),
+               "interval.relation": {"left", "right", "relation", "coord"}}[predicate]
     if set(args) - allowed - {"applicability"}:
         return "INVALID_EVIDENCE", "malformed_claim_arguments", []
     expected = args.get("expected")
@@ -433,6 +435,14 @@ def _rederive(claim, predicate, arts, records, files):
     if predicate == "fact.numeric_bound":
         if args.get("op") not in ("lt", "lte", "gt", "gte") or not (_typed(bound) and _numeric(bound)):
             return "INVALID_EVIDENCE", "malformed_claim_arguments", []
+    wanted = {claim["subject"]}
+    if predicate == "interval.relation":
+        names = [args.get("left"), args.get("right")]
+        if not all(isinstance(n, str) and n.strip() for n in names) or names[0] == names[1] \
+                or args.get("relation") not in ("precedes", "no_overlap", "overlaps") \
+                or not (isinstance(args.get("coord"), str) and args["coord"].strip()):
+            return "INVALID_EVIDENCE", "malformed_claim_arguments", []
+        wanted = {f"{n}.{x}" for n in names for x in _IV_SUFFIXES}
     prov_ref = next((r for r in claim["evidence_refs"] if r in arts and arts[r]["media_type"] == PROVENANCE_MEDIA), None)
     origin = _strict(files[arts[prov_ref]["relative_path"]]).get("origin_source_artifact_id") if prov_ref else None
     sources, obs, blocked, unusable, excluded = [], [], [], [], False
@@ -453,14 +463,16 @@ def _rederive(claim, predicate, arts, records, files):
             unusable.append((ref, summary))
             continue
         for fact in rec["facts"]:
-            if fact["key"] == claim["subject"]:
+            if fact["key"] in wanted:
                 value = _verify_fact(files, arts, rend, fact)
                 loc = fact["locator"]
-                obs.append({"artifact_id": ref, "byte_start": loc["byte_start"], "byte_end": loc["byte_end"],
+                obs.append({"key": fact["key"], "artifact_id": ref, "byte_start": loc["byte_start"], "byte_end": loc["byte_end"],
                             "token_digest": fact["token_digest"], "value": value})
-        blocked += [b for b in rec.get("blocked_keys", []) if b["key"] == claim["subject"]]
+        blocked += [b for b in rec.get("blocked_keys", []) if b["key"] in wanted]
     if not sources:
         return "INSUFFICIENT_EVIDENCE", "no_independent_evidence", []
+    if predicate == "interval.relation":
+        return _rederive_interval(args, obs, unusable, blocked)
     if blocked and not obs:
         return "HUMAN_REVIEW_REQUIRED", "evidence_key_ambiguous", []
     if not obs:
@@ -490,6 +502,73 @@ def _rederive(claim, predicate, arts, records, files):
     if not any(res):
         return "CONTRADICTED", "bound_violated", obs
     return "HUMAN_REVIEW_REQUIRED", ("evidence_conflict" if not all(res) else "evidence_source_unreadable"), obs
+
+
+_IV_SUFFIXES = ("start", "end", "start_min", "start_max", "end_min", "end_max")
+
+
+def _rederive_interval(args, obs, unusable, blocked):
+    if blocked:
+        return "HUMAN_REVIEW_REQUIRED", "evidence_key_ambiguous", obs
+    by = {}
+    for o in obs:
+        by.setdefault(o["key"], []).append(o)
+
+    def bound(name, which):
+        pt, lo_k, hi_k = f"{name}.{which}", f"{name}.{which}_min", f"{name}.{which}_max"
+        vals = {}
+        for k in (pt, lo_k, hi_k):
+            group = by.get(k, [])
+            if len({json.dumps(o["value"], sort_keys=True) for o in group}) > 1:
+                return "evidence_conflict"
+            if group:
+                if not _numeric(group[0]["value"]):
+                    return "kind_mismatch"
+                vals[k] = Decimal(group[0]["value"]["value"])
+        lo, hi = vals.get(lo_k, vals.get(pt)), vals.get(hi_k, vals.get(pt))
+        if lo is None or hi is None:
+            return "bound_missing"
+        if lo > hi or (pt in vals and not lo <= vals[pt] <= hi):
+            return "bounds_inconsistent"
+        return lo, hi
+
+    b = {}
+    for n in (args["left"], args["right"]):
+        for w in ("start", "end"):
+            r = bound(n, w)
+            if isinstance(r, str):
+                verdict = ("INSUFFICIENT_EVIDENCE" if r == "bound_missing"
+                           else "INVALID_EVIDENCE" if r == "bounds_inconsistent" else "HUMAN_REVIEW_REQUIRED")
+                return verdict, r, obs
+            b[(n, w)] = r
+    L, R = args["left"], args["right"]
+    if any(b[(n, "end")][1] < b[(n, "start")][0] for n in (L, R)):
+        return "INVALID_EVIDENCE", "bounds_inconsistent", obs
+    # independent formulation: decide by enumerating the extreme corner cases instead of min/max shortcuts
+    def always(pred):
+        return all(pred(sl, el, sr, er) for sl in b[(L, "start")] for el in b[(L, "end")]
+                   for sr in b[(R, "start")] for er in b[(R, "end")])
+
+    def never(pred):
+        return not any(pred(sl, el, sr, er) for sl in b[(L, "start")] for el in b[(L, "end")]
+                       for sr in b[(R, "start")] for er in b[(R, "end")])
+    overlap = lambda sl, el, sr, er: max(sl, sr) < min(el, er)
+    rel = args["relation"]
+    if rel == "precedes":
+        pred = lambda sl, el, sr, er: el <= sr
+        yes, no = always(pred), never(pred)
+        if not yes and not no:      # corners can miss interior cases only for non-monotone predicates; these are monotone
+            return "INSUFFICIENT_EVIDENCE", "relation_uncertain", obs
+    else:
+        yes, no = always(overlap), never(overlap)
+        if rel == "no_overlap":
+            yes, no = no, yes
+        if not yes and not no:
+            return "INSUFFICIENT_EVIDENCE", "relation_uncertain", obs
+    if yes:
+        return (("HUMAN_REVIEW_REQUIRED", "evidence_source_unreadable", obs) if unusable
+                else ("SUPPORTED", "relation_holds", obs))
+    return "CONTRADICTED", "relation_violated", obs
 
 
 def _typed(v) -> bool:
