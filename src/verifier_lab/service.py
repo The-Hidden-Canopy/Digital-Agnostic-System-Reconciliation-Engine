@@ -20,8 +20,9 @@ from .ingestion.admit import AdmissionError, AdmissionLimits, admit, read_blob, 
 from .ingestion.common import Limits
 from .ingestion.extract import ExtractionFailure, build_record, extract_isolated
 from .model import (Activity, Artifact, Assumption, Bundle, Claim, ProfileRef, Verdict)
-from .rules import (EXTRACT_OP, EXTRACTION_MEDIA, PROFILE_ID, PROFILE_VERSION, PROVENANCE_MEDIA,
-                    CheckContext, builtin_registry)
+from . import riskpacks as RP
+from .rules import (CONTEXT_MEDIA, EXTRACT_OP, EXTRACTION_MEDIA, PROFILE_ID, PROFILE_VERSION, PROVENANCE_MEDIA,
+                    RISKPACK_MEDIA, CheckContext, builtin_registry)
 from .store import Store, jdump, jload, now_iso
 
 MEDIA = {"pdf": "application/pdf", "json": "application/json", "markdown": "text/markdown",
@@ -63,6 +64,7 @@ class Service:
         self.limits = limits or Limits()
         self.admission = admission or AdmissionLimits()
         self.registry = registry or builtin_registry()
+        self.packs = RP.PackCatalog(self.store.root / "packs", self.registry.implemented_predicates())
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="vl-job")
         self.hooks: dict = {}
         self._recover()
@@ -540,9 +542,27 @@ class Service:
         return out
 
     # ------------------------------------------------------------------- runs
+    # ------------------------------------------------------------------ risk packs
+    def list_packs(self) -> list[dict]:
+        return [{"pack_id": p.pack_id, "version": p.version, "digest": p.content_digest, "title": p.body["title"],
+                 "description": p.body.get("description", ""), "obligations": len(p.obligations),
+                 "requires": p.body.get("requires", []), "source_refs": p.body["source_refs"],
+                 "applicability_facts": sorted({f for o in p.obligations for f in _pred_facts(o.get("applicability"))}
+                                               | set(_pred_facts(p.body["applicability"])))}
+                for p in self.packs.list()]
+
+    def install_pack(self, data: bytes) -> dict:
+        try:
+            pack = self.packs.install(data)
+        except RP.PackError as exc:
+            raise ServiceError(422, "pack_" + exc.code, str(exc))
+        return next(p for p in self.list_packs() if p["pack_id"] == pack.pack_id and p["version"] == pack.version)
+
     def start_run(self, claim_revision_ids: list[str], evidence_source_ids: list[str],
-                  idempotency_key: str | None = None) -> dict:
-        payload = {"claims": sorted(claim_revision_ids), "evidence": sorted(evidence_source_ids)}
+                  idempotency_key: str | None = None, pack_ids: list[str] | None = None,
+                  context: dict | None = None) -> dict:
+        payload = {"claims": sorted(claim_revision_ids), "evidence": sorted(evidence_source_ids),
+                   "packs": sorted(pack_ids or []), "context": context or {}}
         prior = self._idem("run", idempotency_key, payload)
         if prior is not None:
             return prior
@@ -565,20 +585,26 @@ class Service:
             if src["superseded_by"]:
                 raise ServiceError(409, "evidence_superseded", f"{src['display_name']} was replaced by a newer import")
             evidence[sid] = att["id"]
+        try:
+            packs = self.packs.resolve(list(pack_ids or []))
+            facts = RP.check_facts(context or {})
+        except RP.PackError as exc:
+            raise ServiceError(422, "pack_" + exc.code, str(exc))
         deps = {"claim_revisions": [r["id"] for r in revs], "evidence": evidence,
+                "packs": {p.pack_id: p.content_digest for p in packs}, "context_digest": RP.context_digest(facts),
                 "origins": {r["id"]: jload(r["body_json"])["origin"]["attempt_id"] for r in revs},
                 "profile_digest": self.registry.profile_digest()}
         seq = self.store.next_seq("run")
         run_id = record_id("run", {"deps": deps, "seq": seq})
         self.store.x("INSERT INTO runs(id,job_id,state,input_json,deps_json,created_seq,created_at) VALUES(?,?,?,?,?,?,?)",
                      (run_id, "", "QUEUED", jdump(payload), jdump(deps), seq, now_iso()))
-        job_id = self._submit("run", {"run_id": run_id}, lambda ctx: self._run_job_fn(ctx, run_id, revs, evidence))
+        job_id = self._submit("run", {"run_id": run_id}, lambda ctx: self._run_job_fn(ctx, run_id, revs, evidence, packs, facts))
         self.store.x("UPDATE runs SET job_id=? WHERE id=?", (job_id, run_id))
         out = {"job_id": job_id, "run_id": run_id, "events_url": f"/api/v1/jobs/{job_id}/events"}
         self._idem_store("run", idempotency_key, payload, out)
         return out
 
-    def _compile(self, revs, evidence: dict[str, str]):
+    def _compile(self, revs, evidence: dict[str, str], packs=(), facts=None):
         blobs: dict[str, bytes] = {}
         artifacts: dict[str, Artifact] = {}
         activities: dict[str, Activity] = {}
@@ -643,14 +669,20 @@ class Service:
                                 "candidate_id": body["candidate_id"], "subject": claim.subject,
                                 "predicate": claim.predicate})
         profile = ProfileRef(PROFILE_ID, PROFILE_VERSION, self.registry.profile_digest())
-        bundle = Bundle.build(artifacts.values(), claims, activities.values(), assumptions.values(), [profile])
+        profiles = [profile]
+        if packs:
+            for pk in packs:     # pinned by exact content digest; the pack bytes travel inside the bundle
+                add_blob(canonical_bytes(pk.body), RISKPACK_MEDIA)
+                profiles.append(ProfileRef(pk.pack_id, pk.version, pk.content_digest))
+            add_blob(canonical_bytes(facts or {}), CONTEXT_MEDIA)
+        bundle = Bundle.build(artifacts.values(), claims, activities.values(), assumptions.values(), profiles)
         return bundle, blobs, claim_index
 
-    def _run_job_fn(self, ctx: JobContext, run_id: str, revs, evidence: dict[str, str]) -> dict:
+    def _run_job_fn(self, ctx: JobContext, run_id: str, revs, evidence: dict[str, str], packs=(), facts=None) -> dict:
         started = time.monotonic()
         self.store.x("UPDATE runs SET state='RUNNING' WHERE id=?", (run_id,))
         ctx.progress("compiling")
-        bundle, blobs, claim_index = self._compile(revs, evidence)
+        bundle, blobs, claim_index = self._compile(revs, evidence, packs, facts)
 
         def reader(art: Artifact) -> bytes:
             data = blobs[art.digest]
@@ -687,6 +719,15 @@ class Service:
             "completion": {"cancelled": False, "claims_total": run.total_claims,
                            "claims_completed": run.completed_claims},
             "limitations": LIMITATIONS}
+        if packs:
+            by_claim = {f.claim_id: f.to_dict() for f in run.findings}
+            cl = [{"id": c["claim_id"], "predicate": c["predicate"], "subject": c["subject"]} for c in claim_index]
+            result["risk_packs"] = [pk.profile_ref() for pk in packs]
+            result["context_digest"] = RP.context_digest(facts or {})
+            result["obligations"] = [e for pk in packs for e in RP.plan_and_assess(pk, facts or {}, cl, by_claim)]
+            result["limitations"] = LIMITATIONS + [
+                "Risk-pack results are evidence assessments under the declared pack, context facts and rules; "
+                "they are not legal, safety or compliance certification."]
         meta = {"tool": "verifier-lab", "tool_version": __version__, "runtime": runtime_identity(),
                 "elapsed_seconds": round(time.monotonic() - started, 3), "created_at": now_iso(),
                 "note": "observation metadata; not part of the semantic result identity"}
@@ -719,6 +760,13 @@ class Service:
                     causes.append({"kind": "origin_reextracted", "id": cand["source_id"]})
                 elif s and s["superseded_by"]:
                     causes.append({"kind": "origin_superseded", "id": cand["source_id"], "by": s["superseded_by"]})
+        for pid, digest in deps.get("packs", {}).items():
+            try:
+                if self.packs.get(pid).content_digest != digest and not any(
+                        p.content_digest == digest for p in self.packs.list() if p.pack_id == pid):
+                    causes.append({"kind": "pack_no_longer_installed", "id": pid})
+            except RP.PackError:
+                causes.append({"kind": "pack_no_longer_installed", "id": pid})
         if deps["profile_digest"] != self.registry.profile_digest():
             causes.append({"kind": "rule_profile_changed", "id": PROFILE_ID})
         return {"state": "STALE" if causes else "CURRENT", "causes": causes}
@@ -741,9 +789,21 @@ class Service:
                                  "evidence_view": self._evidence_view(f, digest_of, names)} for f in result["findings"]]
             view["errors"] = result["errors"]
             view["completion"] = result["completion"]
+            view["obligations"] = result.get("obligations", [])
+            view["risk_packs"] = result.get("risk_packs", [])
+            view["context"] = json.loads(bundle_context) if (bundle_context := self._context_text(row)) else {}
         elif row["state"] == "FAILED":
             view["errors"] = (jload(row["summary_json"]) or {}).get("errors", [])
         return view
+
+    def _context_text(self, row) -> str | None:
+        """Context facts are stored as an artifact in the pinned package."""
+        pkg = Path(row["package_dir"])
+        bundle = json.loads((pkg / "bundle.json").read_bytes())
+        for a in bundle["artifacts"]:
+            if a["media_type"] == CONTEXT_MEDIA:
+                return (pkg / a["relative_path"]).read_text()
+        return None
 
     def _evidence_view(self, finding: dict, digest_of: dict, names: dict, context: int = 160) -> list[dict]:
         """Exact cited tokens with surrounding text, read from the immutable renditions."""
@@ -797,6 +857,55 @@ class Service:
                 "latest_run": None if not latest else {"id": latest["id"], "freshness": latest["freshness"], "counts": verdicts},
                 "capabilities": self.capabilities()}
 
+    # --------------------------------------------------------- advanced: experiments (bounded, synchronous)
+    def _case(self, seed, ops, boundary, defects):
+        from .experiments.checkpoint import ExperimentCase
+        from .experiments.history import generate_history
+        from .subjects.candidate_store import DEFECTS
+        if not isinstance(seed, str) or not seed or len(seed) > 100:
+            raise ServiceError(422, "bad_seed")
+        if not isinstance(ops, int) or isinstance(ops, bool) or not 0 <= ops <= 400:
+            raise ServiceError(422, "bad_ops", "ops must be an integer between 0 and 400")
+        bad = [d for d in (defects or []) if d not in DEFECTS]
+        if bad:
+            raise ServiceError(422, "unknown_defect", f"{bad}; known: {list(DEFECTS)}")
+        b = ops // 2 if boundary is None else boundary
+        return ExperimentCase(seed, tuple(generate_history(seed, ops)), b, tuple(defects or []))
+
+    def experiment_checkpoint(self, seed="seed-1", ops=60, boundary=None, defects=None) -> dict:
+        from .experiments.checkpoint import run_experiment
+        case = self._case(seed, ops, boundary, defects)
+        return {"case": case.identity(), "defects": list(case.defects), **run_experiment(case).to_dict()}
+
+    def experiment_crash(self, writer_defect=None, recovery_defects=None, max_positions=None) -> dict:
+        from .experiments import crash
+        if writer_defect not in (None, *crash.WRITER_DEFECTS) or any(d not in crash.RECOVERY_DEFECTS for d in (recovery_defects or [])):
+            raise ServiceError(422, "unknown_defect")
+        return crash.crash_experiment(writer_defect, tuple(recovery_defects or ()), max_positions).to_dict()
+
+    def experiment_minimize(self, seed="seed-1", ops=120, boundary=None, defects=None, max_oracle_calls=3000) -> dict:
+        import tempfile
+        from .experiments.package import CheckpointOracle, build_package, verify_package_fresh_process, write_package
+        from .minimize import ReductionBudget, minimize
+        from .reducers.sequence import DeleteTransactionMembers, DeleteUnits
+        from .reducers.values import SimplifyValues
+        if not defects:
+            raise ServiceError(422, "defect_required", "inject at least one named defect to have a failure to reduce")
+        case = self._case(seed, ops, boundary, defects)
+        reducers = [DeleteUnits(), DeleteTransactionMembers(), SimplifyValues()]
+        result = minimize(case, CheckpointOracle(), reducers, ReductionBudget(max_oracle_calls=min(int(max_oracle_calls), 3000)))
+        if result.status in ("NOT_REPRODUCED", "UNSTABLE"):
+            return {"status": result.status, "stop_reason": result.stop_reason, "original_units": len(case.ops)}
+        pkg = build_package(result, reducers)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pkg.json"
+            write_package(pkg, path)
+            verification = verify_package_fresh_process(path)
+        return {"status": result.status, "original_units": len(case.ops), "reduced_units": len(result.best.ops),
+                "oracle_calls": result.oracle_calls, "scope": pkg["reduction"]["scope"], "reduced_case": pkg["reduced"]["case"],
+                "signature": pkg["signature"], "witness": pkg["witness"],
+                "fresh_process_verification": verification["status"], "package": pkg}
+
     def capabilities(self) -> dict:
         from .ingestion.adapters import pdf_adapter
         ok, ver = pdf_adapter.available()
@@ -805,3 +914,11 @@ class Service:
                 "pdf": {"available": ok, "parser": "pypdf" if ok else None, "version": ver or None,
                         "ocr": False},
                 "limits": self.limits.to_dict(), "max_upload_bytes": self.admission.max_bytes}
+
+
+def _pred_facts(p) -> list[str]:
+    if not p:
+        return []
+    if p["op"] in ("eq", "in", "exists"):
+        return [p["fact"]]
+    return [f for a in (p.get("args") or [p["arg"]] if "arg" in p else p["args"]) for f in _pred_facts(a)]

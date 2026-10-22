@@ -75,6 +75,39 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   assert.ok((await page.textContent('#fdetail')).includes('service-config.json'), 'evidence source is named');
   assert.strictEqual(await page.textContent('#fdetail mark'), '200');
 
+  // 4b. risk pack with stated context: every obligation shown, applicability facts cited, unknown stays unknown
+  await page.goto(BASE + '#/run');
+  await page.click('button:has-text("Select all")');
+  await page.locator('li', { hasText: 'service-config.json' }).locator('input').check();
+  await page.locator('li', { hasText: 'schema.sql' }).locator('input').check();
+  await page.click('summary:has-text("Risk packs")');
+  await page.locator('label', { hasText: 'Synthetic upload-service controls' }).locator('input').check();
+  await page.fill('#ctx', ['service.kind = web', 'service.accepts_uploads = true', 'service.makes_remote_calls = true',
+    'data.stores_personal_email = true', 'service.mutates_state = true', 'service.tier = modern'].join('\n'));
+  await page.click('button:has-text("Start run")');
+  await page.waitForSelector('text=Open findings', { timeout: 60000 });
+  await page.click('text=Open findings >> nth=0');
+  await page.waitForSelector('text=Risk-pack obligations');
+  const obRows = page.locator('h3:has-text("synthetic-upload-controls") ~ .tablewrap tbody tr');
+  assert.strictEqual(await obRows.count(), 6);
+  const rowFor = (id) => page.locator('tr', { has: page.locator('code', { hasText: new RegExp('^' + id + '$') }) });
+  assert.ok((await rowFor('UPLOAD-LIMIT').innerText()).includes('Contradicted'));
+  assert.ok((await rowFor('REQUIRED-EMAIL').innerText()).includes('Supported'));
+  assert.ok((await rowFor('LEGACY-MODE').innerText()).includes('Not applicable'));
+  assert.ok((await rowFor('LEGACY-MODE').innerText()).includes('service.tier="modern"'));      // cites the facts that establish it
+  assert.ok((await rowFor('DATA-CLASS').innerText()).includes('Human review required'));        // unknown applicability is not "not applicable"
+  assert.ok((await rowFor('DATA-CLASS').innerText()).includes('applicability UNKNOWN'));
+
+  // 4c. advanced page: inject a defect, minimize it, see the fresh-process verification and the scope statement
+  await page.goto(BASE + '#/advanced');
+  await page.selectOption('#x-defect', 'reset_next_id');
+  await page.fill('#x-seed', 'seed-3');
+  await page.click('button:has-text("Minimize the failure")');
+  await page.waitForSelector('text=Fresh-process reproduction: VERIFIED', { timeout: 60000 });
+  assert.ok((await page.innerText('main')).includes('not global minimality'));
+  await page.click('button:has-text("Enumerate every crash position")');
+  await page.waitForSelector('text=All recoveries valid');
+
   // 5. export + independent checker
   await page.goto(BASE + '#/export');
   const [download] = await Promise.all([page.waitForEvent('download'), page.click('button:has-text("Download package")')]);

@@ -348,11 +348,31 @@ function decisionForm(c) {
 async function viewRun(runId) {
   const live = begin();
   setNav("run");
-  const [claims, sources, runs] = await Promise.all([api("GET", "claims"), api("GET", "sources"), api("GET", "runs")]);
+  const [claims, sources, runs, packs] = await Promise.all([api("GET", "claims"), api("GET", "sources"), api("GET", "runs"), api("GET", "packs")]);
   const cur = claims.items.filter((c) => c.status === "CURRENT");
   const ready = sources.items.filter((s) => s.attempt && s.attempt.state === "EXTRACTED" && !s.superseded_by);
   const preview = h("div", { role: "status", "aria-live": "polite" });
   const startBtn = h("button", { class: "primary", text: "Start run" });
+  const packBoxes = new Map();
+  const ctxArea = h("textarea", { id: "ctx", rows: 6, spellcheck: false, placeholder: "service.kind = web\nservice.accepts_uploads = true\ndata.is_sensitive = null   (null = explicitly none; leave out what you do not know)" });
+  const packHint = h("p", { class: "muted" });
+  const packPanel = h("details", { class: "card" }, h("summary", { text: "Risk packs (optional)" }),
+    h("p", { class: "muted", text: "A pack maps stated context to obligations and the evidence they need. It is data, not code. Results are evidence assessments under the pack and the facts you state - not certification. Facts you leave out stay UNKNOWN; they are never assumed false." }),
+    packs.items.length ? packs.items.map((p) => { const cb = h("input", { type: "checkbox", onchange: () => { packHint.textContent = "Context facts these packs look at: " + [...new Set([...packBoxes].filter(([, c]) => c.checked).flatMap(([id]) => packs.items.find((x) => x.pack_id === id).applicability_facts))].join(", "); } });
+      packBoxes.set(p.pack_id, cb);
+      return h("div", {}, h("label", { class: "inline" }, cb, h("span", {}, h("strong", { text: p.title }), ` v${p.version}, ${p.obligations} obligations`)), h("div", { class: "muted mono", text: p.digest })); })
+      : h("p", { class: "muted", text: "No packs installed." }),
+    packHint, h("label", { for: "ctx", text: "Context facts (one per line: key = value; true, false, null, integers or text)" }), ctxArea);
+  const parseContext = () => {
+    const out = {};
+    for (const raw of ctxArea.value.split("\n")) {
+      const line = raw.replace(/\s+\(.*\)\s*$/, "").trim(); if (!line) continue;
+      const i = line.indexOf("="); if (i < 1) throw new Error(`Context line needs key = value: ${line}`);
+      const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
+      out[k] = v === "true" ? true : v === "false" ? false : v === "null" ? null : /^-?\d+$/.test(v) ? parseInt(v, 10) : v;
+    }
+    return out;
+  };
   const upd = () => {
     const nc = state.runSel.claims.size, ns = state.runSel.sources.size;
     const warnings = [];
@@ -367,7 +387,8 @@ async function viewRun(runId) {
   startBtn.addEventListener("click", async () => {
     startBtn.disabled = true;
     try {
-      const r = await api("POST", "runs", { body: { claim_revision_ids: [...state.runSel.claims], evidence_source_ids: [...state.runSel.sources] }, headers: { "Idempotency-Key": crypto.randomUUID() } });
+      const r = await api("POST", "runs", { body: { claim_revision_ids: [...state.runSel.claims], evidence_source_ids: [...state.runSel.sources],
+        pack_ids: [...packBoxes].filter(([, c]) => c.checked).map(([id]) => id), context: parseContext() }, headers: { "Idempotency-Key": crypto.randomUUID() } });
       announce("Run started."); location.hash = "#/run/" + enc(r.run_id); pollJobs(true);
     } catch (e) { preview.append(errorBox(e)); startBtn.disabled = false; }
   });
@@ -381,6 +402,7 @@ async function viewRun(runId) {
         cur.length ? h("button", { text: "Select all", onclick: () => { cur.forEach((c) => state.runSel.claims.add(c.id)); viewRun(runId); } }) : null),
       h("div", { class: "card" }, h("h2", { text: "Evidence to test against" }),
         ready.length ? h("ul", { style: "list-style:none;padding:0" }, ready.map((s) => cbox(state.runSel.sources, s.id, `${s.name} (${s.format}, coverage ${s.attempt.coverage})`))) : h("p", { class: "muted", text: "No completed extractions yet." }))),
+    packPanel,
     h("div", { class: "card" }, preview, startBtn,
       h("p", { class: "muted", text: "A run records verdicts for these exact claim revisions and this evidence snapshot. Closing this tab does not cancel it." })),
     h("div", { id: "rundetail" }),
@@ -432,6 +454,7 @@ async function viewFindings(runId, claimId) {
       h("h2", { text: "Verdict counts (all six shown)" }),
       h("div", { class: "row" }, Object.keys(VERDICTS).map((v) => h("span", {}, verdictBadge(v), ` ${counts[v] || 0}`))),
       run.errors.length ? h("div", { class: "notice bad" }, h("strong", { text: "Execution errors (separate from verdicts): " }), run.errors.length) : null),
+    (run.obligations || []).length ? obligationsCard(run, id) : null,
     h("div", { class: "card" }, h("div", { class: "row" }, h("label", { class: "inline" }, "Show ", filter)),
       h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Verdict", "Subject", "Predicate", "Reason", ""].map((t) => h("th", { text: t })))), tbody))), detail);
   draw();
@@ -439,6 +462,21 @@ async function viewFindings(runId, claimId) {
     const f = run.findings.find((x) => x.claim_id === claimId);
     if (f) findingDetail(detail, f, run);
   }
+}
+
+function obligationsCard(run, runId) {
+  const byPack = {};
+  run.obligations.forEach((o) => (byPack[o.pack_id] = byPack[o.pack_id] || []).push(o));
+  const appBadge = (a) => badge("applicability " + a.result, a.result === "TRUE" ? "b-ok" : a.result === "FALSE" ? "b-neutral" : "b-warn");
+  return h("div", { class: "card" }, h("h2", { text: "Risk-pack obligations" }),
+    h("div", { class: "notice", text: "Evidence assessments under the pinned pack and the context facts you stated. They are not legal, safety or compliance certification, and a remediation note is a proposal - closing it requires a new verified run." }),
+    Object.entries(byPack).map(([pid, list]) => h("div", {}, h("h3", { text: `${pid} v${list[0].pack_version}` }), h("p", { class: "mono muted", text: list[0].pack_digest }),
+      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Obligation", "Verdict", "Applicability", "Why", "Proposed next step"].map((t) => h("th", { text: t })))),
+        h("tbody", {}, list.map((o) => h("tr", {}, h("td", {}, h("code", { text: o.obligation_id }), o.claim_ids.length ? h("div", {}, h("a", { href: `#/findings/${enc(runId)}/${enc(o.claim_ids[0])}`, text: "member finding" })) : null),
+          h("td", {}, verdictBadge(o.verdict)),
+          h("td", {}, appBadge(o.applicability), h("div", { class: "muted mono", text: Object.entries(o.applicability.facts).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ") || "no facts stated" })),
+          h("td", { text: o.reason.replace(/_/g, " ") }),
+          h("td", {}, o.remediation.length ? h("ul", {}, o.remediation.map((r) => h("li", { text: r }))) : "-")))))))));
 }
 
 function findingDetail(box, f, run) {
@@ -498,6 +536,51 @@ async function viewExport() {
       h("div", { class: "row" }, dl, ver), out));
 }
 
+/* ---------------------------------------------------------------- advanced */
+async function viewAdvanced() {
+  setNav("");
+  const live = begin();
+  const DEFECTS = ["omit_random_cursor", "reset_next_id", "double_cursor_after_restore", "flatten_txn", "sort_replay"];
+  const out = h("div", { role: "status", "aria-live": "polite" });
+  const seed = h("input", { id: "x-seed", value: "seed-1" }), ops = h("input", { id: "x-ops", type: "number", min: 0, max: 400, value: 120 });
+  const defect = h("select", { id: "x-defect" }, h("option", { value: "", text: "none (the correct candidate)" }), DEFECTS.map((d) => h("option", { value: d, text: d })));
+  const body = () => ({ seed: seed.value, ops: parseInt(ops.value, 10), defects: defect.value ? [defect.value] : [] });
+  const run = async (path, payload, render) => {
+    put(out, h("p", { class: "muted", text: "Running…" }));
+    try { render(await api("POST", "experiments/" + path, { body: payload })); } catch (e) { put(out, errorBox(e)); }
+  };
+  const showCheckpoint = (r) => put(out, h("div", { class: "notice " + (r.passed ? "ok" : "bad") }, h("strong", { text: r.passed ? "No divergence" : `${r.divergences.length} divergence(s)` }),
+    ` - case ${r.case.slice(0, 20)}…, paths: ${Object.entries(r.coverage.steps_compared_per_path || {}).map(([k, v]) => `${k} ${v} steps`).join(", ")}. This is a bounded statement about this subject over these operations, not universal correctness.`),
+    r.divergences.length ? h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Path", "Operation", "Field", "Expected", "Actual"].map((t) => h("th", { text: t })))),
+      h("tbody", {}, r.divergences.slice(0, 20).map((d) => h("tr", {}, h("td", { text: d.path }), h("td", { text: String(d.op_index) }), h("td", { class: "mono", text: d.field }), h("td", { class: "mono", text: JSON.stringify(d.expected) }), h("td", { class: "mono", text: JSON.stringify(d.actual) })))))) : null,
+    r.errors.length ? errorBox(new Error(JSON.stringify(r.errors))) : null);
+  const showMin = (r) => put(out, r.reduced_units == null
+    ? h("div", { class: "notice warn", text: `Nothing to reduce: ${r.status} - ${r.stop_reason}` })
+    : [h("div", { class: "notice " + (r.fresh_process_verification === "VERIFIED" ? "ok" : "bad") }, h("strong", { text: `${r.original_units} → ${r.reduced_units} operations` }),
+        ` in ${r.oracle_calls} oracle calls. Fresh-process reproduction: ${r.fresh_process_verification}.`),
+      h("p", { text: r.scope }), h("pre", { class: "src", tabIndex: 0, "aria-label": "Reduced case", text: JSON.stringify(r.reduced_case, null, 2) }),
+      h("p", { class: "muted", text: `Failure signature: ${r.signature.witness_class} (${r.signature.reason_code}). The package contains the full reduction log.` })]);
+  const crashSel = h("select", { id: "c-w" }, h("option", { value: "", text: "correct writer" }), h("option", { value: "marker_before_flush", text: "marker_before_flush" }));
+  const crashRec = h("select", { id: "c-r" }, h("option", { value: "", text: "correct recovery" }), ["join_members", "silent_fallback"].map((d) => h("option", { value: d, text: d })));
+  const showCrash = (r) => put(out,
+    h("div", { class: "notice " + (r.passed ? "ok" : "bad") }, h("strong", { text: r.passed ? "All recoveries valid" : `${r.violations.length} violation(s)` }),
+      ` - coverage: ${r.coverage.mode}, ${r.coverage.explored.length} of ${r.coverage.positions_total} positions. Model: ${r.coverage.model} (not a proof for any real filesystem).`),
+    r.violations.length ? h("ul", {}, r.violations.map((v) => h("li", { text: `position ${v.position}: ${v.class}` }))) : null);
+  const crashBtn = h("button", { class: "primary", text: "Enumerate every crash position",
+    onclick: () => run("crash", { writer_defect: crashSel.value || null, recovery_defects: crashRec.value ? [crashRec.value] : [] }, showCrash) });
+  if (!live()) return;
+  put(main, h("h1", { text: "Advanced: experiments" }),
+    h("div", { class: "notice", text: "Optional laboratory tools on a fictional key-value store. Defects are deliberately injected so you can see the laboratory catch them. None of this is needed for the Import → Export workflow." }),
+    h("div", { class: "card" }, h("h2", { text: "Replay and checkpoint" }),
+      h("label", { for: "x-seed", text: "Seed" }), seed, h("label", { for: "x-ops", text: "Operations (0-400)" }), ops, h("label", { for: "x-defect", text: "Injected defect" }), defect,
+      h("div", { class: "row", style: "margin-top:.6rem" }, h("button", { class: "primary", text: "Run three-way experiment", onclick: () => run("checkpoint", body(), showCheckpoint) }),
+        h("button", { text: "Minimize the failure", onclick: () => run("minimize", body(), showMin) }))),
+    h("div", { class: "card" }, h("h2", { text: "Crash boundaries (virtual durable store)" }),
+      h("label", { for: "c-w", text: "Writer" }), crashSel, h("label", { for: "c-r", text: "Recovery" }), crashRec,
+      h("div", { class: "row", style: "margin-top:.6rem" }, crashBtn)),
+    out);
+}
+
 /* -------------------------------------------------------------- job tray */
 let pollTimer = null;
 async function pollJobs(force) {
@@ -519,7 +602,13 @@ async function pollJobs(force) {
       }
       state.lastJobStates[j.id] = j.state;
     }
-    if (changed) { refreshOverview(); if (["import", "run"].includes(route[0]) && !document.activeElement.closest("form")) render(true); }
+    if (changed) {
+      refreshOverview();
+      /* Never re-render over a form the user is filling in: the Run page keeps its selections and context text,
+         and the Import page refreshes only while no file is chosen. Run progress has its own targeted refresh below. */
+      const filesChosen = document.querySelector("#files") && document.querySelector("#files").files.length;
+      if (route[0] === "import" && !filesChosen && !document.activeElement.closest("form")) render(true);
+    }
     else if (route[0] === "run" && route[1]) runDetail(decodeURIComponent(route[1])).catch(() => {});
   } catch (e) { put($("#tray"), h("span", { class: "muted", text: "Reconnecting… last known state shown." })); active = true; }
   pollTimer = setTimeout(() => pollJobs(), active ? 700 : 4000);
@@ -539,6 +628,7 @@ async function render(soft) {
       case "run": await viewRun(dec(route[1])); break;
       case "findings": await viewFindings(dec(route[1]), dec(route[2])); break;
       case "export": await viewExport(); break;
+      case "advanced": await viewAdvanced(); break;
       default: location.hash = "#/import";
     }
   } catch (e) { put(main, errorBox(e)); }

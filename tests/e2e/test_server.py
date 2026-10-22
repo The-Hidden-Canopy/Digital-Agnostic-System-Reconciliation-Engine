@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from tests.helpers import TUTORIAL
+from verifier_lab import riskpacks as RP
 from verifier_lab.server import Workbench
 from verifier_lab.service import Service
 
@@ -41,6 +42,8 @@ class ServerCase(unittest.TestCase):
         c.request(method, path, body=body, headers=h)
         r = c.getresponse()
         data = r.read()
+        if conn is None:
+            c.close()
         try:
             parsed = json.loads(data)
         except ValueError:
@@ -155,3 +158,46 @@ class HttpWorkflow(ServerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PacksAndExperiments(ServerCase):
+    def test_pack_listing_install_conflict_and_run_with_pack(self):
+        s, packs, _ = self.call("GET", "/api/v1/packs")
+        self.assertEqual((s, [p["pack_id"] for p in packs["items"]]), (200, ["synthetic-upload-controls"]))
+        self.assertIn("service.kind", packs["items"][0]["applicability_facts"])
+        pack = json.loads(canonical_pack())
+        s, res, _ = self.call("POST", "/api/v1/packs", pack, headers={"Content-Type": "application/json"})
+        self.assertEqual((s, res["pack_id"]), (201, "http-pack"))
+        pack["title"] = "changed under the same identity"
+        s, err, _ = self.call("POST", "/api/v1/packs", pack, headers={"Content-Type": "application/json"})
+        self.assertEqual((s, err["error"]["code"]), (422, "pack_digest_mismatch"))      # unsealed edit is caught by the digest
+        sealed = dict(RP.seal({k: v for k, v in pack.items() if k != "content_digest"}))
+        s, err, _ = self.call("POST", "/api/v1/packs", sealed, headers={"Content-Type": "application/json"})
+        self.assertEqual((s, err["error"]["code"]), (422, "pack_conflicting_content"))
+        s, err, _ = self.call("POST", "/api/v1/packs", {**pack, "script": "x"}, headers={"Content-Type": "application/json"})
+        self.assertEqual((s, err["error"]["code"]), (422, "pack_unknown_field"))
+
+    def test_experiment_endpoints_are_bounded_and_catch_injected_defects(self):
+        s, ok, _ = self.call("POST", "/api/v1/experiments/checkpoint", {"seed": "s", "ops": 40})
+        self.assertEqual((s, ok["passed"]), (200, True))
+        s, bad, _ = self.call("POST", "/api/v1/experiments/checkpoint", {"seed": "s", "ops": 120, "defects": ["flatten_txn", "reset_next_id"]})
+        self.assertFalse(bad["passed"])
+        self.assertEqual(self.call("POST", "/api/v1/experiments/checkpoint", {"ops": 100000})[0], 422)
+        self.assertEqual(self.call("POST", "/api/v1/experiments/checkpoint", {"defects": ["nope"]})[0], 422)
+        s, cr, _ = self.call("POST", "/api/v1/experiments/crash", {"writer_defect": "marker_before_flush"})
+        self.assertEqual((s, cr["passed"]), (200, False))
+        self.assertEqual(self.call("POST", "/api/v1/experiments/crash", {"writer_defect": "rm -rf"})[0], 422)
+        s, m, _ = self.call("POST", "/api/v1/experiments/minimize", {"seed": "seed-3", "ops": 120, "defects": ["reset_next_id"]})
+        self.assertEqual((s, m["status"], m["fresh_process_verification"]), (200, "REDUCED", "VERIFIED"))
+        self.assertLess(m["reduced_units"], 10)
+        self.assertEqual(self.call("POST", "/api/v1/experiments/minimize", {"defects": []})[1]["error"]["code"], "defect_required")
+
+
+def canonical_pack() -> bytes:
+    body = {"schema": RP.PACK_SCHEMA, "pack_id": "http-pack", "version": "1", "title": "t",
+            "compatible_bundle_versions": ["1"], "applicability": {"op": "eq", "fact": "k", "value": True},
+            "source_refs": [{"title": "synthetic"}],
+            "obligations": [{"obligation_id": "O1", "claim_predicate": "fact.equals",
+                             "rule_ref": {"rule_id": "rule.fact_equals", "version": "1"}}]}
+    from verifier_lab.canonical import canonical_bytes
+    return canonical_bytes(RP.seal(body))

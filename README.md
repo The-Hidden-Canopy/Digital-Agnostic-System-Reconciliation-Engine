@@ -58,6 +58,15 @@ Built-in checks: `fact.equals` (exact typed equality; `2.50` equals `2.5`), `fac
 (`lt|lte|gt|gte`), `fact.present`, and `interval.relation` (activity ordering/overlap with optional uncertainty bounds). Absence is `INSUFFICIENT_EVIDENCE`, never a negative. An assertion is never its own
 evidence. Duplicate keys are never resolved by "last one wins".
 
+## Beyond the default workflow (optional)
+
+* **Risk packs** — pick a data-only pack on the Run page and state the context facts you know. Unknown facts stay unknown (never false);
+  each obligation reports its applicability, the facts it used and a proposed next step. `verifier-lab pack list|validate|install|diff`.
+* **Experiments** — *Advanced* page / `verifier-lab experiment checkpoint|crash`: a three-way (continuous / resumed / replayed) comparison
+  on a fictional key-value store with deliberately injectable defects, and exhaustive crash-boundary enumeration on a virtual store.
+* **Minimization** — `verifier-lab minimize --defect reset_next_id --output case.json` shrinks a failing history to a small reproducer and
+  `verifier-lab verify-counterexample case.json` reproduces it in a fresh process. The scope statement says which operators were exhausted.
+
 ## Layout
 
 ```
@@ -67,6 +76,10 @@ src/verifier_lab/
   ingestion/                            # admit, worker (sandbox), adapters/{json,markdown,sql,pdf}
   service.py store.py                   # application service + SQLite state (shared by UI and CLI)
   export.py checker.py                  # package writer / independent checker
+  graph.py temporal.py                  # dependency graph, uncertainty-aware comparisons
+  riskpacks.py riskpacks_data/          # data-only packs + one synthetic example
+  subjects/ replay.py experiments/      # reference store, checkpoints, three-way + crash experiments
+  minimize.py reducers/                 # failure minimization
   server.py web/                        # loopback HTTP API + vanilla-JS workbench (no build step)
   cli.py
 tests/{unit,contract,adversarial,e2e}   # fictional fixtures only
@@ -77,7 +90,7 @@ docs/                                   # status, package format, security model
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -t .          # 142 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
+python -m unittest discover -s tests -t .          # 223 tests; install the `pdf` extra (pypdf) first, the PDF cases need it
 # Browser journey (needs Playwright + Chromium; not part of unittest):
 verifier-lab --workspace /tmp/ws serve --port 8765 &
 WORKBENCH_URL=http://127.0.0.1:8765/ node tests/e2e/browser_journey.cjs

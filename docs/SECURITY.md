@@ -14,6 +14,9 @@ pages in the same browser (CSRF, DNS rebinding); tampered packages.
 | XSS from source text | `textContent` rendering only, CSP without `unsafe-inline`, no `innerHTML` in the UI (asserted) | `test_ui_assets_...` |
 | Package tampering | Hash manifest + identity recomputation + verdict re-derivation | `Tamper` tests |
 
+| Malicious or sloppy risk packs | Data-only grammar; unknown/executable-looking fields rejected; rules resolve only to the installed catalog; digest pinning; conflicting content under one identity rejected | `test_riskpacks`, `test_server::PacksAndExperiments` |
+| Resource abuse via experiment endpoints | Bounded operations/oracle calls; experiments touch only the in-memory fictional store | `PacksAndExperiments` |
+
 **Not claimed:** a hardened sandbox (no seccomp/namespaces; the guard is defence in depth, not a boundary against
 native-code exploits in a parser dependency such as pypdf); protection if another local process can read the workspace
 directory or the loopback port while it runs (the token is embedded in the served page); multi-user or remote

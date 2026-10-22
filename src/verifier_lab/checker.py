@@ -295,9 +295,121 @@ def _verify(path: Path, rep: Report):
         except Reject as exc:
             entry["accepted"], entry["detail"] = False, str(exc)
         seen_claims.add(f.get("claim_id"))
+    _check_obligations(result, bundle, files, arts, claims, rep)
     missing = set(claims) - seen_claims
     rep.check("every_claim_has_a_finding", not missing, f"{len(missing)} claims without findings")
     rep.check("claim_index_complete", set(claim_index) == set(claims))
+
+
+RISKPACK_MEDIA = "application/vnd.verifier-lab.riskpack+json"
+CONTEXT_MEDIA = "application/vnd.verifier-lab.context-facts+json"
+BUILTIN_PROFILE = "verifier-lab.builtin-rules"
+
+
+def _t_and(a, b):
+    if "FALSE" in (a, b):
+        return "FALSE"
+    return "TRUE" if a == b == "TRUE" else "UNKNOWN"
+
+
+def _t_or(a, b):
+    if "TRUE" in (a, b):
+        return "TRUE"
+    return "FALSE" if a == b == "FALSE" else "UNKNOWN"
+
+
+def _pred(p, facts):
+    """Own three-valued evaluator (no code shared with the producer)."""
+    op = p["op"]
+    if op in ("eq", "in", "exists"):
+        k = p["fact"]
+        if k not in facts:
+            return "UNKNOWN", [k]
+        v = facts[k]
+        if op == "exists":
+            return ("FALSE" if v is None else "TRUE"), [k]
+        if v is None:
+            return "FALSE", [k]
+        cands = [p["value"]] if op == "eq" else p["values"]
+        return ("TRUE" if any(type(v) is type(c) and v == c for c in cands) else "FALSE"), [k]
+    if op == "not":
+        r, u = _pred(p["arg"], facts)
+        return {"TRUE": "FALSE", "FALSE": "TRUE", "UNKNOWN": "UNKNOWN"}[r], u
+    acc, used = ("TRUE" if op == "and" else "FALSE"), []
+    for a in p["args"]:
+        r, u = _pred(a, facts)
+        acc, used = (_t_and if op == "and" else _t_or)(acc, r), used + u
+    return acc, sorted(set(used))
+
+
+def _aggregate(vs):
+    if "CONTRADICTED" in vs:
+        return "CONTRADICTED"
+    if vs and all(v == "SUPPORTED" for v in vs):
+        return "SUPPORTED"
+    for v in ("HUMAN_REVIEW_REQUIRED", "INVALID_EVIDENCE"):
+        if v in vs:
+            return v
+    if vs and all(v == "NOT_APPLICABLE" for v in vs):
+        return "NOT_APPLICABLE"
+    return "INSUFFICIENT_EVIDENCE"
+
+
+def _check_obligations(result, bundle, files, arts, claims, rep):
+    pack_refs = [p for p in bundle["profile_refs"] if p["profile_id"] != BUILTIN_PROFILE]
+    recorded = result.get("obligations")
+    if not pack_refs:
+        rep.check("no_risk_packs_no_obligations", not recorded and not result.get("risk_packs"),
+                  "result carries obligations although no pack is pinned in the bundle")
+        return
+    ctx_art = next((a for a in arts.values() if a["media_type"] == CONTEXT_MEDIA), None)
+    if not rep.check("context_artifact_present", ctx_art is not None):
+        return
+    facts = _strict(files[ctx_art["relative_path"]])
+    rep.check("context_digest_pinned", result.get("context_digest") == _dg(_canon(facts)))
+    findings = {f["claim_id"]: f["verdict"] for f in result["findings"]}
+    cl = [{"id": c["id"], "predicate": c["predicate"], "subject": c["subject"]} for c in claims.values()]
+    expected = []
+    pack_arts = [_strict(files[a["relative_path"]]) for a in arts.values() if a["media_type"] == RISKPACK_MEDIA]
+    for ref in sorted(pack_refs, key=lambda r: r["profile_id"]):
+        body = next((b for b in pack_arts if b.get("pack_id") == ref["profile_id"] and b.get("version") == ref["profile_version"]), None)
+        if not rep.check(f"pack_artifact:{ref['profile_id']}", body is not None, "pinned pack bytes missing from package"):
+            continue
+        digest = _dg(_canon({k: v for k, v in body.items() if k != "content_digest"}))
+        if not rep.check(f"pack_digest_pinned:{ref['profile_id']}", digest == ref["digest"] == body.get("content_digest"),
+                         "pack content differs from the digest pinned in the bundle"):
+            continue
+        pa, pu = _pred(body["applicability"], facts)
+        for o in sorted(body["obligations"], key=lambda x: x["obligation_id"]):
+            oa, ou = _pred(o["applicability"], facts) if "applicability" in o else ("TRUE", [])
+            app = _t_and(pa, oa)
+            used = sorted(set(pu + ou))
+            e = {"pack_id": body["pack_id"], "obligation_id": o["obligation_id"],
+                 "applicability": {"result": app, "facts_used": used, "facts": {k: facts[k] for k in used if k in facts}}}
+            if app == "FALSE":
+                e.update(verdict="NOT_APPLICABLE", reason="applicability_established_false", claim_ids=[], finding_ids=[])
+            elif app == "UNKNOWN":
+                human = o.get("classification_requires_human")
+                e.update(verdict="HUMAN_REVIEW_REQUIRED" if human else "INSUFFICIENT_EVIDENCE",
+                         reason="applicability_requires_human_classification" if human else "applicability_unknown",
+                         claim_ids=[], finding_ids=[])
+            else:
+                ms = [c for c in cl if c["predicate"] == o["claim_predicate"] and ("subject" not in o or c["subject"] == o["subject"])]
+                if not ms:
+                    e.update(verdict="INSUFFICIENT_EVIDENCE", reason="no_claim_for_obligation", claim_ids=[], finding_ids=[])
+                else:
+                    fids = sorted(f["id"] for f in result["findings"] if f["claim_id"] in {c["id"] for c in ms})
+                    e.update(verdict=_aggregate([findings[c["id"]] for c in ms if c["id"] in findings]),
+                             reason="member_findings_aggregated", claim_ids=sorted(c["id"] for c in ms), finding_ids=fids)
+            expected.append(e)
+    got = {(x["pack_id"], x["obligation_id"]): x for x in (recorded or [])}
+    rep.check("obligation_set_complete", set(got) == {(e["pack_id"], e["obligation_id"]) for e in expected},
+              "obligations in result differ from the pinned packs")
+    for e in expected:
+        g = got.get((e["pack_id"], e["obligation_id"]))
+        same = bool(g) and all(g.get(k) == e[k] for k in ("applicability", "verdict", "reason", "claim_ids", "finding_ids"))
+        rep.check(f"obligation:{e['pack_id']}/{e['obligation_id']}", same,
+                  f"re-derived {e['verdict']}/{e['reason']}; result says {g and (g.get('verdict'), g.get('reason'))}")
 
 
 def _load_records(files, arts, acts, rep):

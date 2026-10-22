@@ -12,6 +12,8 @@ from .model import Artifact, Bundle, Claim, Finding, Verdict
 
 EXTRACTION_MEDIA = "application/vnd.verifier-lab.extraction-record+json"
 PROVENANCE_MEDIA = "application/vnd.verifier-lab.claim-provenance+json"
+RISKPACK_MEDIA = "application/vnd.verifier-lab.riskpack+json"
+CONTEXT_MEDIA = "application/vnd.verifier-lab.context-facts+json"
 EXTRACT_OP = "ingestion.extract"
 USABLE = ("PARSED", "PARTIALLY_PARSED")
 MAX_WITNESS_BYTES = 100_000
@@ -380,6 +382,9 @@ class RuleRegistry:
 
     def keys(self):
         return sorted(self._rules)
+
+    def implemented_predicates(self) -> dict[tuple[str, str], str]:
+        return {k: r.predicate for k, r in self._rules.items()}
 
     def default_plan(self) -> dict[str, tuple[str, str]]:
         return {r.predicate: (r.rule_id, r.rule_version) for r in self._rules.values()}

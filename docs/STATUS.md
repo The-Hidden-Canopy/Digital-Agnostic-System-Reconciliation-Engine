@@ -29,8 +29,27 @@ counts are in the README. Anything not listed as tested is untested.
 | Temporal reasoning (06) | `temporal.py`: exact-Decimal closed intervals, strict precedence, half-open positive overlap under uncertainty, logical clocks that never compare across clock ids, possibility sets, happens-before reachability. Overlap/missing data is `UNKNOWN`. | same |
 | `interval.relation` rule | Document-checkable claims (`precedes`, `no_overlap`, `overlaps`) over facts `<name>.start|end` with optional `_min/_max` uncertainty. Two durations never prove overlap; conflicting sources go to human review. Editable in the review form. | unit + `IntervalWorkflow` e2e |
 
-The independent checker does **not** yet cover `rule.interval_relation`; packages containing it verify but list it under
-`unsupported`. Composition *obligations* (tags, generations, unit conversion edges) and the cache-key scheme are not built.
+The independent checker re-derives `rule.interval_relation` with its own corner-case formulation; a 400-case differential
+test against the producer found and fixed an incomplete "impossible overlap" case in `temporal.positive_overlap`.
+Composition *obligations* (tags, generations, unit conversion edges) and the cache-key scheme are not built.
+
+## Added in increment three (chapters 05, 07, 11)
+
+| Area | Implemented | Evidence |
+|---|---|---|
+| Replay and checkpoint (05) | `subjects/reference_store.py` (hand-written field inventory: entries, next id, tick, random cursor, operation cursor; atomic one-unit transactions), a separately written mutable candidate with five injectable defects, `replay.py` (identity-checked checkpoints, pure replay plans that refuse gaps/duplicates/wrong generation/version instead of repairing), three-way experiment comparing the decoded state at **every** post-boundary step with field-level witnesses | `tests/unit/test_experiments.py` |
+| Crash model (05) | Virtual durable store, exhaustive enumeration of every crash boundary, declared coverage (`exhaustive` or `truncated_by_budget` with the unexplored positions listed), writer and recovery defects (`marker_before_flush`, `join_members`, `silent_fallback`) | same |
+| Failure minimization (07) | `minimize.py` + `reducers/`: failure *signature* (positions excluded), five-way oracle outcome, ddmin chunk deletion over whole units, a dedicated transaction-member reducer, value/key/seed simplifiers with strictly decreasing lexicographic cost, graph-cycle reducers (edge deletion, node deletion with dependent closure, unreferenced-node deletion), oracle cache that never caches operational errors, flaky originals reported `UNSTABLE`, honest scope statements | `tests/unit/test_minimize.py` |
+| Counterexample package (07) | Original and reduced case, signature, witness, full reduction log, verified by **reproduction in a fresh interpreter** that shares no state with the reducer; tampered cases/signatures/witnesses are rejected even with a recomputed package id; a deliberately lax oracle is caught | same |
+| Risk-pack engine (11) | `riskpacks.py`: data-only packs (unknown or executable-looking fields rejected), bounded predicate grammar (eq/in/exists/and/or/not, no regex, no coercion), three-valued applicability with full truth-table tests, content-digest pinning, conflicting content under one identity rejected, `requires` with cycle detection, machine-readable pack diff, obligation planning and conjunctive aggregation that keeps member findings, remediation *proposals*, one synthetic example pack (a fictional example, not a policy) | `tests/unit/test_riskpacks.py`, `tests/e2e/test_riskpack_workflow.py` |
+| Packs in runs, UI, checker | Pack bytes and context facts travel inside the bundle, pinned by digest in `profile_refs`; `result.json` gains an obligations layer; the checker re-derives applicability with its own three-valued evaluator and re-aggregates verdicts, and rejects flipped, dropped or laundered-`NOT_APPLICABLE` obligations, edited packs and altered context | `PackTamper` tests |
+| UI | Optional "Risk packs" panel on Run (selection and context facts, never assumed false), obligations table on Findings, an Advanced page for experiments/minimization/crash enumeration. Experiment endpoints are bounded (≤ 400 operations, ≤ 3000 oracle calls) and operate only on the fictional store. | browser journey, `PacksAndExperiments` |
+| CLI | `experiment`, `minimize`, `verify-counterexample`, `pack list/validate/install/diff`, `check --pack --context` | manual runs; `test_cli` covers the older commands only |
+
+Limits worth knowing: the checkpoint experiment and the minimizer share the experiment runner (reproduction in a fresh process is
+independent of the *reducer*, not an independent reimplementation of the store semantics); the crash model is a simulation;
+the experiment tools are a laboratory demo on a fictional store, not a way to test an arbitrary external program yet (there is no
+adapter for running a user-supplied subject). **No jurisdiction pack exists**: chapters 14-15 are untouched.
 
 ## Deliberate deviations from the docuseries
 
@@ -46,9 +65,8 @@ The independent checker does **not** yet cover `rule.interval_relation`; package
 
 ## Not built yet (explicitly out of this increment)
 
-Replay/checkpoint experiments, purpose profiles, composition obligations,
-failure minimization, mutation/metamorphic campaigns and campaign reports (chapters 03–07, 09, most of 10);
-the generic risk-pack engine and the EU/US/China/Australia packs (11, 14, 15) — **no jurisdiction content exists
+Purpose profiles (04), composition obligations (03), mutation/metamorphic campaigns and campaign reports (09, most of 10),
+subject adapters for user-supplied programs; the EU/US/China/Australia packs (14, 15) — **no jurisdiction content exists
 here**; OCR; signatures and trust anchors; model-assisted suggestions; manual creation of claims from free prose;
 manual claim editing beyond the three predicates; dependency-graph and temporal-replay views; multi-project support.
 

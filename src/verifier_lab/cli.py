@@ -72,6 +72,34 @@ def _experiments(args) -> int:
     return OK if verdict["status"] == "VERIFIED" else REJECTED
 
 
+def _packs(args) -> int:
+    from . import riskpacks as RP
+    from .rules import builtin_registry
+    reg = builtin_registry()
+    catalog = RP.PackCatalog(Path(args.workspace) / "packs", reg.implemented_predicates())
+    try:
+        if args.action == "list":
+            _out([{"pack_id": p.pack_id, "version": p.version, "digest": p.content_digest,
+                   "obligations": len(p.obligations)} for p in catalog.list()])
+        elif args.action == "validate":
+            for f in args.files:
+                pack = RP.load_pack(Path(f).read_bytes(), reg.implemented_predicates())
+                _out({"valid": True, "pack": pack.profile_ref()})
+        elif args.action == "install":
+            _out([catalog.install(Path(f).read_bytes()).profile_ref() for f in args.files])
+        else:
+            if len(args.files) != 2:
+                _err("diff needs two pack files")
+                return INVALID
+            a, b = (RP.load_pack(Path(f).read_bytes(), reg.implemented_predicates()) for f in args.files)
+            _out(RP.diff_packs(a, b))
+    except RP.PackError as exc:
+        _err(str(exc))
+        _out({"valid": False, "error": {"code": exc.code, "message": str(exc)}})
+        return INVALID
+    return OK
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="verifier-lab", description=__doc__.split("\n\n")[0])
     ap.add_argument("--workspace", default=".workspace", help="local workspace directory (default: .workspace)")
@@ -93,6 +121,13 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("check", help="run checks of approved claims against evidence sources")
     s.add_argument("--claims", nargs="*", default=None, help="claim revision ids (default: all current)")
     s.add_argument("--evidence", nargs="+", required=True, help="source ids to test against")
+    s.add_argument("--pack", action="append", default=[], help="risk pack id to assess (repeatable)")
+    s.add_argument("--context", action="append", default=[], metavar="KEY=VALUE",
+                   help="applicability fact (true/false/null/integer/text); unknown facts stay UNKNOWN")
+    s.add_argument("--context-file", help="JSON object of applicability facts")
+    s = sub.add_parser("pack", help="inspect, validate, install and diff risk packs (data only)")
+    s.add_argument("action", choices=["list", "validate", "install", "diff"])
+    s.add_argument("files", nargs="*")
     s = sub.add_parser("export", help="export a run as a portable package (zip)")
     s.add_argument("run_id")
     s.add_argument("--output", required=True)
@@ -126,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
         return OK if res["status"] == "VERIFIED" else REJECTED
     if args.cmd in ("experiment", "minimize", "verify-counterexample"):
         return _experiments(args)
+    if args.cmd == "pack":
+        return _packs(args)
     if args.cmd == "validate":
         bundle, diags = parse_bundle(Path(args.bundle).read_bytes())
         _out({"valid": bundle is not None, "bundle_id": bundle.bundle_id if bundle else None,
@@ -173,7 +210,11 @@ def main(argv: list[str] | None = None) -> int:
             return OK
         if args.cmd == "check":
             claims = args.claims or [c["id"] for c in svc.list_claims() if c["status"] == "CURRENT"]
-            started = svc.start_run(claims, args.evidence)
+            facts = json.loads(Path(args.context_file).read_text()) if args.context_file else {}
+            for item in args.context:
+                k, _, v = item.partition("=")
+                facts[k] = ({"true": True, "false": False, "null": None}.get(v, int(v) if v.lstrip("-").isdigit() else v))
+            started = svc.start_run(claims, args.evidence, pack_ids=args.pack, context=facts)
             job = svc.wait_job(started["job_id"], timeout=3600)
             run = svc.get_run(started["run_id"])
             _out(run)
