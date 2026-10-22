@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import sysconfig
 
 
 class IsolationUnavailable(RuntimeError):
@@ -34,11 +35,24 @@ def command(argv: list[str], package_root: str, mode: str) -> list[str]:
     # read-only and no application workspace path is added.
     interpreter_roots = (Path(sys.prefix), Path(sys.base_prefix),
                          Path(sys.executable).parent.parent)
+    # ``LIBDIR`` is distinct from the prefix on hosted CPython installations.
+    # Preserve its lexical and resolved paths too, then make it the dynamic
+    # loader's explicit search path after ``--clearenv``.  This avoids relying
+    # on the container's ld cache to know a runner-provided Python install.
+    runtime_library_dirs = {
+        path
+        for value in (sysconfig.get_config_var('LIBDIR'), sysconfig.get_config_var('LIBPL'))
+        if value
+        for path in (Path(value), Path(value).resolve())
+    }
     roots = {path for root in interpreter_roots for path in (root, root.resolve())}
+    roots.update(runtime_library_dirs)
     roots.add(Path(package_root).resolve())
     libraries = [Path(p) for p in ('/usr/lib', '/lib', '/lib64') if Path(p).exists()]
     args = [bwrap, '--unshare-all', '--die-with-parent', '--new-session', '--cap-drop', 'ALL',
             '--clearenv', '--setenv', 'LANG', 'C.UTF-8']
+    if runtime_library_dirs:
+        args += ['--setenv', 'LD_LIBRARY_PATH', ':'.join(map(str, sorted(runtime_library_dirs, key=str)))]
     for root in sorted(roots, key=str):
         args += ['--ro-bind', str(root), str(root)]
     for path in libraries:
