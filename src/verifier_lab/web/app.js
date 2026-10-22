@@ -348,8 +348,8 @@ function decisionForm(c) {
 async function viewRun(runId) {
   const live = begin();
   setNav("run");
-  const [claims, sources, runs, packs] = await Promise.all([api("GET", "claims"), api("GET", "sources"), api("GET", "runs"), api("GET", "packs")]);
-  const purposes = (await api("GET", "purposes")).items;
+  const [claims, sources, runs, packs, purposeList] = await Promise.all([api("GET", "claims"), api("GET", "sources"), api("GET", "runs"), api("GET", "packs"), api("GET", "purposes")]);
+  const purposes = purposeList.items;
   const cur = claims.items.filter((c) => c.status === "CURRENT");
   const ready = sources.items.filter((s) => s.attempt && s.attempt.state === "EXTRACTED" && !s.superseded_by);
   const preview = h("div", { role: "status", "aria-live": "polite" });
@@ -411,14 +411,17 @@ async function viewRun(runId) {
       announce("Run started."); location.hash = "#/run/" + enc(r.run_id); pollJobs(true);
     } catch (e) { preview.append(errorBox(e)); startBtn.disabled = false; }
   });
-  const cbox = (set, id, label, extra) => h("li", {}, h("label", { class: "inline" }, h("input", { type: "checkbox", checked: set.has(id), onchange: (e) => { e.target.checked ? set.add(id) : set.delete(id); upd(); } }), label), extra);
+  const claimBoxes = [];
+  const cbox = (set, id, label, extra) => { const inp = h("input", { type: "checkbox", checked: set.has(id), onchange: (e) => { e.target.checked ? set.add(id) : set.delete(id); upd(); } });
+    if (set === state.runSel.claims) claimBoxes.push([inp, id]);
+    return h("li", {}, h("label", { class: "inline" }, inp, label), extra); };
   if (!live()) return;
   put(main, h("h1", { text: "Run checks" }),
     h("div", { class: "grid2" },
       h("div", { class: "card" }, h("h2", { text: "Claims to test" }),
         cur.length ? h("ul", { class: "plain", style: "list-style:none;padding:0" }, cur.map((c) => cbox(state.runSel.claims, c.id, h("span", {}, h("code", { text: c.subject }), ` ${c.predicate} ${c.arguments.expected ? fmtVal(c.arguments.expected) : c.arguments.op ? c.arguments.op + " " + c.arguments.bound.value : ""}`)))) :
           h("p", { class: "muted" }, "No approved claims yet. ", h("a", { href: "#/review", text: "Review candidates" }), "."),
-        cur.length ? h("button", { text: "Select all", onclick: () => { cur.forEach((c) => state.runSel.claims.add(c.id)); viewRun(runId); } }) : null),
+        cur.length ? h("button", { text: "Select all", onclick: () => { cur.forEach((c) => state.runSel.claims.add(c.id)); claimBoxes.forEach(([inp]) => (inp.checked = true)); upd(); } }) : null),
       h("div", { class: "card" }, h("h2", { text: "Evidence to test against" }),
         ready.length ? h("ul", { style: "list-style:none;padding:0" }, ready.map((s) => cbox(state.runSel.sources, s.id, `${s.name} (${s.format}, coverage ${s.attempt.coverage})`))) : h("p", { class: "muted", text: "No completed extractions yet." }))),
     purposePanel, packPanel,

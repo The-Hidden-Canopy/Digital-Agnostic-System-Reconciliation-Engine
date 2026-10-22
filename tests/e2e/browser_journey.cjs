@@ -56,7 +56,11 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
 
   // 3. run
   await page.goto(BASE + '#/run');
-  await page.click('button:has-text("Select all")');
+  await page.waitForSelector('summary:has-text("Risk packs")');       // the page renders after several parallel fetches
+  await page.locator('details:has(summary:has-text("Risk packs"))').evaluate((d) => (d.open = true));
+  await page.fill('#ctx', 'service.kind = web');
+  await page.click('button:has-text("Select all")');                     // must not wipe what is already filled in
+  assert.strictEqual(await page.inputValue('#ctx'), 'service.kind = web');
   await page.locator('li', { hasText: 'service-config.json' }).locator('input').check();
   await page.locator('li', { hasText: 'schema.sql' }).locator('input').check();
   await page.click('button:has-text("Start run")');
@@ -77,10 +81,14 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
 
   // 4b. risk pack with stated context: every obligation shown, applicability facts cited, unknown stays unknown
   await page.goto(BASE + '#/run');
-  await page.click('button:has-text("Select all")');
+  await page.waitForSelector('summary:has-text("Risk packs")');       // the page renders after several parallel fetches
+  await page.locator('details:has(summary:has-text("Risk packs"))').evaluate((d) => (d.open = true));
+  await page.fill('#ctx', 'service.kind = web');
+  await page.click('button:has-text("Select all")');                     // must not wipe what is already filled in
+  assert.strictEqual(await page.inputValue('#ctx'), 'service.kind = web');
   await page.locator('li', { hasText: 'service-config.json' }).locator('input').check();
   await page.locator('li', { hasText: 'schema.sql' }).locator('input').check();
-  await page.click('summary:has-text("Risk packs")');
+  await page.locator('details:has(summary:has-text("Risk packs"))').evaluate((d) => (d.open = true));
   await page.locator('label', { hasText: 'Synthetic upload-service controls' }).locator('input').check();
   await page.fill('#ctx', ['service.kind = web', 'service.accepts_uploads = true', 'service.makes_remote_calls = true',
     'data.stores_personal_email = true', 'service.mutates_state = true', 'service.tier = modern'].join('\n'));
@@ -127,6 +135,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.waitForFunction(() => !/QUEUED|PARSING/.test(document.querySelector('main').innerText) && /counters-g6\.json/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
   await page.waitForTimeout(1500);
   await page.goto(BASE + '#/run');
+  await page.waitForSelector('summary:has-text("Purpose")');
   for (const n of ['map.json', 'counters-g6.json', 'history.json']) await page.locator('li', { hasText: n }).locator('input').check();
   await page.click('summary:has-text("Purpose (optional)")');
   await page.locator('label', { hasText: 'Resume exactly from a checkpoint' }).locator('input').check();
