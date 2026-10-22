@@ -108,6 +108,17 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.click('button:has-text("Enumerate every crash position")');
   await page.waitForSelector('text=All recoveries valid');
 
+  // 4d. campaign page: the real verifier passes; a defective one fails visibly; a forged report is rejected
+  await page.goto(BASE + '#/campaign');
+  await page.click('button:has-text("Run campaign")');
+  await page.waitForSelector('text=Campaign passed');
+  assert.ok((await page.innerText('main')).includes('every operator and relation ran at least once'));
+  await page.selectOption('#k-kernel', 'always_supported');
+  await page.click('button:has-text("Run campaign")');
+  await page.waitForSelector('text=Campaign FAILED');
+  await page.click('button:has-text("Forge the passing total")');
+  await page.waitForSelector('text=Forged report: REJECTED');
+
   // 5. export + independent checker
   await page.goto(BASE + '#/export');
   const [download] = await Promise.all([page.waitForEvent('download'), page.click('button:has-text("Download package")')]);

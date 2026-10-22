@@ -570,6 +570,7 @@ async function viewAdvanced() {
     onclick: () => run("crash", { writer_defect: crashSel.value || null, recovery_defects: crashRec.value ? [crashRec.value] : [] }, showCrash) });
   if (!live()) return;
   put(main, h("h1", { text: "Advanced: experiments" }),
+    h("p", {}, h("a", { href: "#/campaign", text: "Mutation and metamorphic campaigns →" }), " - does the verifier itself catch defects?"),
     h("div", { class: "notice", text: "Optional laboratory tools on a fictional key-value store. Defects are deliberately injected so you can see the laboratory catch them. None of this is needed for the Import → Export workflow." }),
     h("div", { class: "card" }, h("h2", { text: "Replay and checkpoint" }),
       h("label", { for: "x-seed", text: "Seed" }), seed, h("label", { for: "x-ops", text: "Operations (0-400)" }), ops, h("label", { for: "x-defect", text: "Injected defect" }), defect,
@@ -579,6 +580,83 @@ async function viewAdvanced() {
       h("label", { for: "c-w", text: "Writer" }), crashSel, h("label", { for: "c-r", text: "Recovery" }), crashRec,
       h("div", { class: "row", style: "margin-top:.6rem" }, crashBtn)),
     out);
+}
+
+/* ---------------------------------------------------------------- campaign */
+const KERNELS = [["real", "Real verifier (the production rules)"], ["always_supported", "Negative control: always SUPPORTED"],
+  ["always_contradicted", "Negative control: always CONTRADICTED"], ["last_key_wins", "Negative control: duplicate keys / conflicts resolved silently"],
+  ["self_reference_allowed", "Negative control: a claim's own source counts as evidence"]];
+
+function downloadJson(name, obj) {
+  const a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(obj, null, 1)], { type: "application/json" })), download: name });
+  document.body.append(a); a.click(); a.remove();
+}
+
+async function viewCampaign() {
+  setNav("");
+  const live = begin();
+  const kernel = h("select", { id: "k-kernel" }, KERNELS.map(([v, t]) => h("option", { value: v, text: t })));
+  const seed = h("input", { id: "k-seed", value: "campaign-1" });
+  const out = h("div", { id: "k-out", role: "status", "aria-live": "polite" });
+  const go = h("button", { class: "primary", text: "Run campaign", onclick: async () => {
+    go.disabled = true; put(out, h("p", { class: "muted", text: "Running every case…" }));
+    try { renderCampaign(out, await api("POST", "experiments/campaign", { body: { kernel: kernel.value, seed: seed.value } })); announce("Campaign finished."); }
+    catch (e) { put(out, errorBox(e)); }
+    go.disabled = false;
+  } });
+  if (!live()) return;
+  put(main, h("h1", { text: "Advanced: does the verifier catch defects?" }),
+    h("div", { class: "notice", text: "A passing test suite does not prove a verifier is right: a verifier can be consistently wrong. A campaign applies known defects (mutations) and meaning-preserving changes (metamorphic relations) to hand-written synthetic cases whose expected answers were committed in advance, then checks the verifier's answers. Negative controls are verifiers with a deliberate bug - a campaign that stays green against one would mean the harness itself is broken." }),
+    h("div", { class: "card" }, h("label", { for: "k-kernel", text: "Verifier under test" }), kernel, h("label", { for: "k-seed", text: "Campaign seed (part of the pinned case manifest)" }), seed,
+      h("div", { class: "row", style: "margin-top:.6rem" }, go, h("a", { href: "#/advanced", text: "Back to experiments" }))),
+    out);
+}
+
+function renderCampaign(out, res) {
+  const r = res.report, sum = r.summary, c = sum.counts;
+  const executed = c.PASSED + c.FAILED;
+  const failedRun = r.survivors.length > 0 || c.FAILED > 0 || c.ERROR > 0;
+  const stat = (label, n, cls, note) => h("div", { class: "card", style: "flex:1;min-width:150px;margin:0" }, h("div", { class: "badge " + cls, text: label }), h("div", { style: "font-size:1.8rem;font-weight:700", text: String(n) }), h("div", { class: "muted", text: note }));
+  const ver = res.verification;
+  const verBox = h("div", {});
+  const showVer = (v, title) => put(verBox, h("div", { class: "notice " + (v.status === "ACCEPTED" ? "ok" : "bad"), role: "alert" }, h("strong", { text: `${title}: ${v.status}` }), " - ", v.conclusion),
+    v.status === "REJECTED" ? h("ul", {}, v.checks.filter((x) => !x.ok).map((x) => h("li", {}, h("code", { text: x.name }), x.detail ? ` - ${x.detail}` : ""))) : null);
+  showVer(ver, "Independent checker (anchored to the trusted manifest digest)");
+  const forge = h("button", { text: "Forge the passing total and re-verify", onclick: async () => {
+    const bad = JSON.parse(JSON.stringify(r)); bad.summary.counts.PASSED += bad.summary.counts.FAILED; bad.summary.counts.FAILED = 0;
+    showVer(await api("POST", "experiments/campaign-verify", { body: { report: bad, manifest: res.manifest, trusted_manifest_digest: res.trusted_manifest_digest } }), "Forged report");
+  } });
+  const covTable = (title, rows, withLayer) => h("div", {}, h("h3", { text: title }), h("div", { class: "tablewrap" }, h("table", {},
+    h("thead", {}, h("tr", {}, [title.split(" ")[0], withLayer ? "Layer" : "", "Cases", "Executed", "Passed", "Failed", "Skipped (precondition)"].filter((x, i) => x || i !== 1).map((t) => h("th", { text: t })))),
+    h("tbody", {}, Object.entries(rows).map(([k, v]) => h("tr", {}, h("td", {}, h("code", { text: k })),
+      withLayer ? h("td", {}, badge(r.cases.find((x) => x.operator === k).layer, r.cases.find((x) => x.operator === k).layer === "byte" ? "b-warn" : "b-info")) : null,
+      h("td", { text: v.cases }), h("td", { text: v.executed }), h("td", { text: v.passed }), h("td", { class: v.failed ? "mono" : "", text: v.failed ? "✕ " + v.failed : "0" }), h("td", { text: v.skipped })))))));
+  const filter = h("select", { "aria-label": "Filter cases", onchange: () => drawCases() }, ["", "FAILED", "PASSED", "SKIPPED_PRECONDITION", "ERROR"].map((x) => h("option", { value: x, text: x || "All statuses" })));
+  const tbody = h("tbody");
+  const drawCases = () => put(tbody, r.cases.filter((x) => !filter.value || x.status === filter.value).map((x) => h("tr", {},
+    h("td", {}, badge(x.status.replace("_PRECONDITION", ""), x.status === "PASSED" ? "b-ok" : x.status === "FAILED" ? "b-bad" : x.status === "ERROR" ? "b-bad" : "b-neutral")),
+    h("td", {}, badge(x.layer, x.layer === "metamorphic" ? "b-info" : x.layer === "byte" ? "b-warn" : "b-neutral")),
+    h("td", {}, h("code", { text: x.id })),
+    h("td", {}, x.comparison && x.comparison.target ? `${x.comparison.target.expected[0]} expected, ${x.comparison.target.actual[0] || "-"} actual`
+      : x.comparison && x.comparison.relation ? (x.comparison.relation.ok ? "relation holds" : x.comparison.relation.detail.slice(0, 80)) : x.status === "SKIPPED_PRECONDITION" ? "precondition not met - not a pass" : x.error || "")))); drawCases();
+  put(out,
+    h("div", { class: "notice " + (failedRun ? "bad" : "ok"), role: "alert" }, h("strong", { text: failedRun ? `Campaign FAILED against "${r.kernel.name}"` : `Campaign passed against "${r.kernel.name}"` }),
+      failedRun ? ` - ${r.survivors.length} mutation(s) survived undetected and ${c.FAILED} case(s) did not behave as expected. This is what a defective verifier looks like.` : ` - every executed case behaved as committed in advance. This is a bounded statement about these synthetic cases, not proof of correctness.`),
+    h("div", { class: "row", style: "align-items:stretch" }, stat("Passed", c.PASSED, "b-ok", `of ${executed} executed`), stat("Failed", c.FAILED, c.FAILED ? "b-bad" : "b-neutral", "expectation not met"),
+      stat("Skipped", c.SKIPPED_PRECONDITION, "b-neutral", "precondition not met; never counted as passes"), stat("Errors", c.ERROR, c.ERROR ? "b-bad" : "b-neutral", "execution problems")),
+    h("p", {}, h("strong", { text: `${sum.mutation_detection.detected} of ${sum.mutation_detection.executed_mutations}` }), ` executed mutations were detected (${sum.mutation_detection.scope}). `,
+      sum.never_executed.length ? badge("never executed: " + sum.never_executed.join(", "), "b-warn") : badge("every operator and relation ran at least once", "b-ok")),
+    h("div", { class: "card" }, h("h2", { text: "Is this report trustworthy?" }), verBox, h("div", { class: "row", style: "margin-top:.5rem" }, forge,
+      h("button", { text: "Download report", onclick: () => downloadJson("campaign-report.json", r) }), h("button", { text: "Download manifest", onclick: () => downloadJson("campaign-manifest.json", res.manifest) })),
+      h("p", { class: "mono muted", text: "trusted manifest digest: " + res.trusted_manifest_digest }),
+      h("p", { class: "muted", text: "Without a digest from a trusted channel, a checker can only say the report is consistent with the manifest it was given; an attacker could drop a failing case and recompute both." })),
+    r.survivors.length ? h("div", { class: "card" }, h("h2", { text: `Surviving mutations (${r.survivors.length})` }), h("ul", {}, r.survivors.map((id) => {
+      const x = r.cases.find((y) => y.id === id); const t = x.comparison.target;
+      return h("li", {}, h("code", { text: id }), ` - expected ${t.expected[0]} (${t.expected[1]}), got ${t.actual[0]} (${t.actual[1]})`); }))) : null,
+    h("div", { class: "card" }, h("h2", { text: "Coverage" }), covTable("Operator coverage", sum.operators, true), covTable("Rule coverage (predicate under mutation)", sum.rules, false),
+      covTable("Metamorphic relation coverage", sum.relations, false)),
+    h("div", { class: "card" }, h("h2", { text: "Every case" }), h("div", { class: "row" }, h("label", { class: "inline" }, "Show ", filter)),
+      h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Status", "Layer", "Case", "Outcome"].map((t) => h("th", { text: t })))), tbody))));
 }
 
 /* -------------------------------------------------------------- job tray */
@@ -629,6 +707,7 @@ async function render(soft) {
       case "findings": await viewFindings(dec(route[1]), dec(route[2])); break;
       case "export": await viewExport(); break;
       case "advanced": await viewAdvanced(); break;
+      case "campaign": await viewCampaign(); break;
       default: location.hash = "#/import";
     }
   } catch (e) { put(main, errorBox(e)); }

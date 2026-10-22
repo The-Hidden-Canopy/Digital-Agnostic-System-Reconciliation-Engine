@@ -72,6 +72,37 @@ def _experiments(args) -> int:
     return OK if verdict["status"] == "VERIFIED" else REJECTED
 
 
+def _campaign(args) -> int:
+    from . import campaign_checker
+    from .harness import campaign
+    if args.action == "verify":
+        if not (args.report and args.manifest):
+            _err("verify needs --report and --manifest")
+            return INVALID
+        res = campaign_checker.verify_campaign_report(json.loads(Path(args.report).read_text()), json.loads(Path(args.manifest).read_text()),
+                                                      args.trusted_manifest_digest)
+        _out(res)
+        return OK if res["status"] == "ACCEPTED" else REJECTED
+    from .harness.world import KERNELS
+    if args.kernel not in KERNELS:
+        _err(f"unknown kernel; known: {sorted(KERNELS)}")
+        return INVALID
+    outs = [Path(p) for p in (args.output, args.manifest_output) if p]
+    if any(p.exists() for p in outs):
+        _err("refusing to overwrite an existing output")
+        return INVALID
+    manifest = campaign.build_manifest(args.seed)
+    report = campaign.run_campaign(args.kernel, manifest)
+    if args.output:
+        Path(args.output).write_text(json.dumps(report, indent=1, sort_keys=True))
+    if args.manifest_output:
+        Path(args.manifest_output).write_text(json.dumps(manifest, indent=1, sort_keys=True))
+    _out({"kernel": args.kernel, "manifest_digest": manifest["manifest_digest"], "report_digest": report["report_digest"],
+          "summary": report["summary"]["counts"], "mutation_detection": report["summary"]["mutation_detection"],
+          "survivors": report["survivors"]})
+    return OK if not report["survivors"] and report["summary"]["counts"]["ERROR"] == 0 else ATTENTION
+
+
 def _packs(args) -> int:
     from . import riskpacks as RP
     from .rules import builtin_registry
@@ -148,6 +179,15 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--defect", action="append", required=True)
     s.add_argument("--max-oracle-calls", type=int, default=3000)
     s.add_argument("--output", required=True)
+    s = sub.add_parser("campaign", help="run a mutation/metamorphic campaign, or verify a campaign report")
+    s.add_argument("action", choices=["run", "verify"])
+    s.add_argument("--kernel", default="real")
+    s.add_argument("--seed", default="campaign-1")
+    s.add_argument("--output", help="report path (run)")
+    s.add_argument("--manifest-output", help="manifest path (run)")
+    s.add_argument("--report")
+    s.add_argument("--manifest")
+    s.add_argument("--trusted-manifest-digest", help="digest from a trusted channel; without it the conclusion is narrower")
     s = sub.add_parser("verify-counterexample", help="reproduce a counterexample package in a fresh process")
     s.add_argument("package")
     s = sub.add_parser("validate", help="structurally validate a bundle.json")
@@ -159,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
         res = verify_package(Path(args.package))
         _out(res)
         return OK if res["status"] == "VERIFIED" else REJECTED
+    if args.cmd == "campaign":
+        return _campaign(args)
     if args.cmd in ("experiment", "minimize", "verify-counterexample"):
         return _experiments(args)
     if args.cmd == "pack":

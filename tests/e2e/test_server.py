@@ -193,6 +193,24 @@ class PacksAndExperiments(ServerCase):
         self.assertEqual(self.call("POST", "/api/v1/experiments/minimize", {"defects": []})[1]["error"]["code"], "defect_required")
 
 
+class Campaigns(ServerCase):
+    def test_campaign_endpoint_verifier_controls_and_forgery_check(self):
+        s, ok, _ = self.call("POST", "/api/v1/experiments/campaign", {"kernel": "real"})
+        self.assertEqual((s, ok["report"]["survivors"], ok["verification"]["status"]), (200, [], "ACCEPTED"))
+        self.assertTrue(ok["verification"]["anchored"])
+        s, bad, _ = self.call("POST", "/api/v1/experiments/campaign", {"kernel": "always_supported"})
+        self.assertGreater(len(bad["report"]["survivors"]), 0)
+        self.assertEqual(bad["verification"]["status"], "ACCEPTED")          # an honest report that documents failures
+        forged = json.loads(json.dumps(bad["report"]))
+        forged["summary"]["counts"]["PASSED"] += forged["summary"]["counts"]["FAILED"]
+        forged["summary"]["counts"]["FAILED"] = 0
+        s, res, _ = self.call("POST", "/api/v1/experiments/campaign-verify",
+                              {"report": forged, "manifest": bad["manifest"], "trusted_manifest_digest": bad["trusted_manifest_digest"]})
+        self.assertEqual((s, res["status"]), (200, "REJECTED"))
+        self.assertEqual(self.call("POST", "/api/v1/experiments/campaign", {"kernel": "rm -rf"})[0], 422)
+        self.assertEqual(self.call("POST", "/api/v1/experiments/campaign-verify", {"report": 1, "manifest": 2})[0], 422)
+
+
 def canonical_pack() -> bytes:
     body = {"schema": RP.PACK_SCHEMA, "pack_id": "http-pack", "version": "1", "title": "t",
             "compatible_bundle_versions": ["1"], "applicability": {"op": "eq", "fact": "k", "value": True},

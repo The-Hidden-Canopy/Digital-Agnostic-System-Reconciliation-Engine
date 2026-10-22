@@ -215,6 +215,10 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._json_body()
                 if parts[1] == "checkpoint":
                     return self._json(200, svc.experiment_checkpoint(body.get("seed", "seed-1"), body.get("ops", 60), body.get("boundary"), body.get("defects")))
+                if parts[1] == "campaign":
+                    return self._json(200, svc.campaign_run(body.get("kernel", "real"), body.get("seed", "campaign-1")))
+                if parts[1] == "campaign-verify":
+                    return self._json(200, svc.campaign_verify(body.get("report"), body.get("manifest"), body.get("trusted_manifest_digest")))
                 if parts[1] == "crash":
                     return self._json(200, svc.experiment_crash(body.get("writer_defect"), body.get("recovery_defects"), body.get("max_positions")))
                 if parts[1] == "minimize":

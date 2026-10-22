@@ -906,6 +906,33 @@ class Service:
                 "signature": pkg["signature"], "witness": pkg["witness"],
                 "fresh_process_verification": verification["status"], "package": pkg}
 
+    # ------------------------------------------------------------------ advanced: mutation campaigns
+    CAMPAIGN_KERNELS = {
+        "real": "The production rules and engine",
+        "always_supported": "Negative control: always answers SUPPORTED",
+        "always_contradicted": "Negative control: always answers CONTRADICTED",
+        "last_key_wins": "Negative control: silently resolves duplicate keys and conflicts",
+        "self_reference_allowed": "Negative control: lets a claim's own source count as evidence"}
+
+    def campaign_run(self, kernel: str = "real", seed: str = "campaign-1") -> dict:
+        from . import campaign_checker
+        from .harness import campaign
+        if kernel not in self.CAMPAIGN_KERNELS:
+            raise ServiceError(422, "unknown_kernel", f"known: {list(self.CAMPAIGN_KERNELS)}")
+        if not isinstance(seed, str) or not 0 < len(seed) <= 100:
+            raise ServiceError(422, "bad_seed")
+        manifest = campaign.build_manifest(seed)
+        report = campaign.run_campaign(kernel, manifest)
+        check = campaign_checker.verify_campaign_report(report, manifest, manifest["manifest_digest"])
+        return {"kernels": self.CAMPAIGN_KERNELS, "manifest": manifest, "report": report, "verification": check,
+                "trusted_manifest_digest": manifest["manifest_digest"]}
+
+    def campaign_verify(self, report, manifest, trusted_digest=None) -> dict:
+        from . import campaign_checker
+        if not isinstance(report, dict) or not isinstance(manifest, dict):
+            raise ServiceError(422, "bad_campaign_documents")
+        return campaign_checker.verify_campaign_report(report, manifest, trusted_digest)
+
     def capabilities(self) -> dict:
         from .ingestion.adapters import pdf_adapter
         ok, ver = pdf_adapter.available()

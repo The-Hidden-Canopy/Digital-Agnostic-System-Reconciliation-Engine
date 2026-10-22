@@ -51,6 +51,22 @@ independent of the *reducer*, not an independent reimplementation of the store s
 the experiment tools are a laboratory demo on a fictional store, not a way to test an arbitrary external program yet (there is no
 adapter for running a user-supplied subject). **No jurisdiction pack exists**: chapters 14-15 are untouched.
 
+## Added in increment four (chapters 09 and 10)
+
+| Area | Implemented | Evidence |
+|---|---|---|
+| Mutation operators (09) | Ten operators over hand-written synthetic scenarios, each with preconditions, a committed expected outcome and a soundness note; semantic and byte layers labelled separately; mutations are non-destructive and recorded (base/result digest, generator version, seed) | `tests/unit/test_campaign.py` |
+| Metamorphic relations (09) | Six relations (key order, opaque renaming, irrelevant artifact, removing the only witness, increasing uncertainty, processing order), each with a satisfying and a precondition-failing example. "More evidence never hurts" is deliberately not a relation. | same |
+| Campaigns (09, 10) | Deterministic digest-pinned manifest, `PASSED / FAILED / SKIPPED_PRECONDITION / ERROR` accounting (skips never count as passes), operator/rule/relation coverage, surviving mutations listed, report digest | same |
+| Negative controls | Four defective kernels (always-SUPPORTED, always-CONTRADICTED, last-key-wins, self-reference allowed); every one fails the campaign | same |
+| Independent report checker (10) | `campaign_checker.py` (no producer imports): exact case set, unique ids, recomputed statuses and totals, hidden survivors, skip laundering, altered expectations, report digest; a self-consistent weakened manifest is accepted **only** if no trusted digest is supplied, and is then labelled as the narrower conclusion | same; `Campaigns` server test |
+| UI / CLI | Campaign page (kernel select, headline, denominators, coverage, survivors, every case, forged-report demo), `verifier-lab campaign run\|verify` | browser journey |
+
+The first campaign found a real defect in the production rules (`interval.relation` reported `INSUFFICIENT_EVIDENCE` for corrupt
+evidence instead of `INVALID_EVIDENCE`); it is fixed and has a regression test. Scope: two small synthetic bases, ~70 cases. The
+detection ratio is reported with its denominator and is not a safety score. Not built: user-authored relations, automated
+shrinking of campaign failures through the minimizer, bundle-level (rather than scenario-level) mutation of exported packages.
+
 ## Deliberate deviations from the docuseries
 
 * **UI stack:** vanilla JavaScript served as static files (no React/TypeScript, no build step) to keep the slice
