@@ -221,6 +221,10 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   (all >= 4.5:1). This decides the token-level contrast items; it does not cover images, user-agent defaults,
   or disabled controls (exempt under WCAG), and it is not a screen-reader or full manual accessibility review.
 
+* Dependency inventory drift: `tests/unit/test_dependency_inventory.py` fails if a hash-pinned Python build/PDF dependency or the
+  CI-pinned Playwright/axe-core version differs from the `RELEASE.md` table, if a pin lacks a hash, or if the package gains a
+  required runtime dependency. It checks consistency only, not provenance, licenses or vulnerabilities.
+
 ## CI host capability note
 
 GitHub's default hosted-job sandbox blocked Bubblewrap from creating its required nested user
