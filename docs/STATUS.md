@@ -216,6 +216,11 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   something, then recover once the API returns. This found that a failed screen had no heading; the router's fallback now
   shows a heading, the error and a "Try again" button. Passed in the local Ubuntu container release gate; no remote CI run implied.
 
+* Colour contrast: axe-core leaves layered-background and pre-formatted text as "incomplete". `tests/unit/test_contrast.py`
+  now computes WCAG contrast from the stylesheet tokens for 22 text/background pairings in light and dark themes
+  (all >= 4.5:1). This decides the token-level contrast items; it does not cover images, user-agent defaults,
+  or disabled controls (exempt under WCAG), and it is not a screen-reader or full manual accessibility review.
+
 ## CI host capability note
 
 GitHub's default hosted-job sandbox blocked Bubblewrap from creating its required nested user
