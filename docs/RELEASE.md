@@ -46,6 +46,13 @@ button fails the audit. `accessibility.json` retains the engine version, passing
 checks that need manual review. No rule, element or result category is excluded to obtain a pass.
 Automated coverage supplements the keyboard journey; it does not replace a screen-reader audit.
 
+### Linux check from another OS
+
+With Docker (and Bash, such as Git Bash), `tools/linux_container_check.sh unit` runs the full suite and
+`tools/linux_container_check.sh release` runs the clean-build, installed-wheel Chromium and axe gate inside a
+privileged Ubuntu 24.04 container, with Bubblewrap and libseccomp in required mode. It tests the committed `HEAD`
+(commit first), downloads Node, Playwright and Chromium for `release`, and is local validation only, not a remote CI run.
+
 ## Evidence and limits
 
 A successful run writes `evidence.json`, build wheels in `dist-1/` and `dist-2/`, input/dependency
