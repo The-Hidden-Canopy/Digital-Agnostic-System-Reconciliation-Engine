@@ -193,7 +193,7 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   previously produced HTTP 500; they are now 422 client errors (`bad_query`, `bad_run_request`).
 * `FailureStates` tests cover unknown ids, bad framing, wrong JSON shapes and undecodable names. Seven new tests
   passed on the recovered Windows workspace; the rest of the suite there still fails closed in required parser mode
-  (same 104 failures/18 errors with and without this change). A clean clone of commit 9f30f0c then passed all 380 tests in a local privileged Ubuntu 24.04/Python 3.12 container with Bubblewrap and libseccomp (required parser mode); browser and accessibility gates were not rerun, and no remote CI run is implied.
+  (same 104 failures/18 errors with and without this change). A clean clone of commit 9f30f0c then passed all 380 tests in a local privileged Ubuntu 24.04/Python 3.12 container with Bubblewrap and libseccomp (required parser mode); `tools/check_release.py --browser --accessibility` (clean wheel builds, installed-wheel Chromium journey, nine axe audits with their manual-review queue) also passed there. The browser journey previously counted its own deliberately mocked 422 as an unexpected console error; it now expects exactly that one entry. No remote CI run is implied.
 * CLI: a missing, unreadable or non-JSON input file (`validate`, `pack`, `campaign verify`, `--context-file`) now
   gives a one-line error and exit code 4 instead of a traceback (`CliInputFailures`).
 * Experiment endpoints validate defect lists, boundaries, crash `max_positions` and minimizer budgets as 422 client errors
