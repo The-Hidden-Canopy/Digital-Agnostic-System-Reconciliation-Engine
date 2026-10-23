@@ -206,6 +206,8 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   produce 422 client errors before decision processing.
 * A malformed re-extraction dialect is rejected before admission creates another attempt, including for
   formats where dialect choice has no meaning.
+* The installed-wheel browser journey waits for each imported fixture to reach `EXTRACTED` before using it.
+  This replaces timing sleeps and partial filename checks that intermittently raced the import refresh.
 
 ## CI host capability note
 

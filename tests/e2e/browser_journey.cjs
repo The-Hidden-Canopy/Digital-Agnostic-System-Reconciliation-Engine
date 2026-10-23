@@ -22,13 +22,16 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   const problems = [];
   page.on('pageerror', (e) => problems.push('pageerror: ' + e.message));
   page.on('console', (m) => { if (m.type() === 'error') problems.push('console: ' + m.text()); });
+  const waitForImports = (names) => page.waitForFunction((expected) => expected.every((name) =>
+    [...document.querySelectorAll('main table tbody tr')].some((row) => row.innerText.includes(name) && row.innerText.includes('EXTRACTED'))),
+  names, { timeout: 60000 });
 
   // 1. import (SQL dialect declared, never guessed)
   await page.goto(BASE + '#/import');
   await page.setInputFiles('#files', ['product-spec.md', 'service-config.json', 'schema.sql'].map((f) => FIX + f));
   await page.selectOption('#dialect', 'postgresql');
   await page.click('button[type=submit]');
-  await page.waitForFunction(() => document.querySelectorAll('tbody tr').length >= 3 && !/QUEUED|PARSING/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
+  await waitForImports(['product-spec.md', 'service-config.json', 'schema.sql']);
   await page.waitForFunction(() => /PARTIALLY_PARSED/.test(document.querySelector('main').innerText));  // markdown HTML comment stays visible as unsupported
   await audit(page, 'import');
   if (process.env.AXE_MODULE) {
@@ -162,9 +165,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.goto(BASE + '#/import');
   await page.setInputFiles('#files', ['map.json', 'counters-g6.json', 'history.json'].map((f) => PUR + f));
   await page.click('button[type=submit]');
-  await page.waitForFunction(() => ['map.json', 'counters-g6.json', 'history.json'].every((name) =>
-    [...document.querySelectorAll('main table tbody tr')].some((row) => row.innerText.includes(name) && row.innerText.includes('EXTRACTED'))),
-  null, { timeout: 60000 });
+  await waitForImports(['map.json', 'counters-g6.json', 'history.json']);
   await page.goto(BASE + '#/run');
   await page.waitForSelector('summary:has-text("Purpose")');
   for (const n of ['map.json', 'counters-g6.json', 'history.json']) await page.locator('li', { hasText: n }).locator('input').check();
@@ -184,9 +185,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.goto(BASE + '#/import');
   await page.setInputFiles('#files', ['units-mismatch.json', 'units-converted.json', 'scoped.json'].map((f) => COMP + f));
   await page.click('button[type=submit]');
-  await page.waitForFunction(() => ['units-mismatch.json', 'units-converted.json', 'scoped.json'].every((name) =>
-    [...document.querySelectorAll('main table tbody tr')].some((row) => row.innerText.includes(name) && row.innerText.includes('EXTRACTED'))),
-  null, { timeout: 60000 });
+  await waitForImports(['units-mismatch.json', 'units-converted.json', 'scoped.json']);
   await page.goto(BASE + '#/composition');
   await page.waitForSelector('#c-src');
   await page.selectOption('#c-src', { label: 'units-mismatch.json' });
@@ -251,7 +250,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
     { name: 'reviewer-evidence.json', mimeType: 'application/json', buffer: Buffer.from('{"author":{"limit":200}}') }
   ]);
   await page.click('button[type=submit]');
-  await page.waitForFunction(() => !/QUEUED|PARSING/.test(document.querySelector('main').innerText) && /reviewer-note\.md/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
+  await waitForImports(['reviewer-note.md', 'reviewer-evidence.json']);
   await page.locator('a', { hasText: 'reviewer-note.md' }).click();
   await page.locator('summary', { hasText: 'Create a claim from this text' }).click();
   await page.locator('#a-source').evaluate((el) => { el.focus(); el.setSelectionRange(8, el.value.length - 1); });
