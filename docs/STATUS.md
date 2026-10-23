@@ -198,6 +198,9 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   gives a one-line error and exit code 4 instead of a traceback (`CliInputFailures`).
 * Experiment endpoints validate defect lists, boundaries, crash `max_positions` and minimizer budgets as 422 client errors
   (previously a mistyped crash/defect parameter returned 500).
+* The run endpoint accepts the workbench's purpose request objects and rejects scalar entries. A regression
+  in the initial failure-state validator caused the purpose browser journey to stall; the hosted release gate
+  exposed it, and the corrected request shape has a focused HTTP test.
 
 ## CI host capability note
 

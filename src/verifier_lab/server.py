@@ -256,12 +256,15 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["runs"]:
                 body = self._json_body()
                 lists = {k: _string_list(body, k) for k in
-                         ("claim_revision_ids", "evidence_source_ids", "pack_ids", "purposes")}
+                         ("claim_revision_ids", "evidence_source_ids", "pack_ids")}
+                purposes = body.get("purposes", [])
+                if not isinstance(purposes, list) or not all(isinstance(p, dict) for p in purposes):
+                    raise ServiceError(422, "bad_run_request", "purposes must be a list of objects")
                 context = body.get("context") or {}
                 if not isinstance(context, dict):
                     raise ServiceError(422, "bad_run_request", "context must be an object")
                 res = svc.start_run(lists["claim_revision_ids"], lists["evidence_source_ids"],
-                                    h.get("Idempotency-Key"), lists["pack_ids"], context, lists["purposes"])
+                                    h.get("Idempotency-Key"), lists["pack_ids"], context, purposes)
                 return self._json(202, res)
             if len(parts) == 3 and parts[0] == "runs" and parts[2] == "verify":
                 path = svc.export_run(parts[1])

@@ -155,10 +155,15 @@ class FailureStates(ServerCase):
     def test_wrong_json_shapes_are_client_errors(self):
         self.assertClientError(self.call("POST", "/api/v1/runs", b"[]", headers={"Content-Type": "application/json"}), 400, "object_required")
         for body in ({"claim_revision_ids": "x"}, {"claim_revision_ids": [1]}, {"evidence_source_ids": {"a": 1}},
-                     {"context": []}, {"pack_ids": 3}, {"purposes": "p"}):
+                     {"context": []}, {"pack_ids": 3}, {"purposes": "p"}, {"purposes": ["p"]}):
             s, resp, _ = self.call("POST", "/api/v1/runs", body)
             self.assertIn(s, (400, 404, 422), (body, resp))
             self.assertIn("error", resp)
+
+    def test_purpose_objects_reach_service_validation(self):
+        s, body, _ = self.call("POST", "/api/v1/runs", {"purposes": [{"profile_id": "inspect-checkpoint", "version": "1", "bindings": {}}]})
+        self.assertEqual(s, 422, body)
+        self.assertEqual(body["error"]["code"], "empty_selection")
 
     def test_unusable_utf8_and_percent_encoding(self):
         self.assertEqual(self.call("GET", "/api/v1/sources/%ff%fe")[0], 404)
