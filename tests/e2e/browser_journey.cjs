@@ -222,7 +222,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
     assert.ok((await card.innerText()).includes(expected), `${context || 'no context'}: expected ${expected}`);
     const text = await page.innerText('main');
     if (expected === 'Not applicable') assert.ok(text.includes('Not evaluated because the purpose does not apply: role:entries_count') && text.includes('context: environment="lab"'));
-    if (expected === 'Insufficient evidence') assert.ok(text.includes('context: environment=unstated') && text.includes('never false'));
+    if (expected === 'Insufficient evidence') assert.ok(text.includes('context: environment=unstated') && text.includes('never treated as false'));
   }
 
   // 4f. composition page: units mismatch is contradicted with the edge named; the converted version composes; targeting scopes it
