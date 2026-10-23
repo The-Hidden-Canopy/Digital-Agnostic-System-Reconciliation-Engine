@@ -40,8 +40,7 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
     body: JSON.stringify({ error: { code: 'retry_rejected', message: 'Retry unavailable for this test' } }) }));
   await page.click('button:has-text("Re-extract with this dialect")');
   await page.waitForSelector('text=Retry unavailable for this test');
-  assert.deepStrictEqual(problems, [], problems.join("
-"));
+  assert.deepStrictEqual(problems, [], problems.join(String.fromCharCode(10)));
   await page.unroute(retryRoute);
   await page.goto(BASE + '#/import');
   if (process.env.AXE_MODULE) {
