@@ -189,6 +189,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"items": svc.list_runs()})
             if len(parts) == 2 and parts[0] == "runs":
                 return self._json(200, svc.get_run(parts[1]))
+            if len(parts) == 3 and parts[0] == "runs" and parts[2] == "reuse":
+                if not qs.get("against"):
+                    raise ServiceError(422, "bad_query", "against (an earlier run id) is required")
+                return self._json(200, svc.compare_runs(parts[1], qs["against"]))
             if len(parts) == 3 and parts[0] == "runs" and parts[2] == "export":
                 path = svc.export_run(parts[1])
                 return self._send(200, path.read_bytes(), "application/zip",

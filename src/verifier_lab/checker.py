@@ -817,9 +817,15 @@ def _check_composition_finding(f, claim, arts, records, files, entry):
     verdict, reason, obligations, w = _composition_verdict(claim, arts, records, files)
     if (verdict, reason) != (f["verdict"], f["reason_code"]):
         raise Reject(f"re-derived {verdict}/{reason}, finding says {f['verdict']}/{f['reason_code']}")
-    theirs = [(o["id"], o["verdict"], o["reason"]) for o in ((f.get("witness") or {}).get("analysis") or {}).get("obligations", [])]
+    analysis = (f.get("witness") or {}).get("analysis") or {}
+    theirs = [(o["id"], o["verdict"], o["reason"]) for o in analysis.get("obligations", [])]
     if theirs != obligations:
         raise Reject("per-obligation findings differ from the re-derived ones")
+    target = claim["arguments"].get("target") if isinstance(claim["arguments"], dict) else None
+    if target and analysis:
+        expected = _evaluation_key(_composition_doc(claim, arts, records, files), target, f["rule_version"])
+        if analysis.get("evaluation_key") != expected:
+            raise Reject("evaluation_key differs from the independently derived key")
     entry["accepted"], entry["detail"] = True, "pipeline obligations re-derived from the admitted evidence bytes"
 
 
@@ -863,6 +869,66 @@ def _composition_verdict(claim, arts, records, files):
         return "HUMAN_REVIEW_REQUIRED", "evidence_source_unreadable", obs, {}
     return overall, {"SUPPORTED": "composition_valid", "CONTRADICTED": "composition_violated",
                      "INSUFFICIENT_EVIDENCE": "composition_unresolved", "INVALID_EVIDENCE": "composition_invalid"}[overall], obs, {}
+
+
+def _composition_doc(claim, arts, records, files):
+    """The single pipeline document the verdict was derived from (callers have already established it exists and agrees)."""
+    for r in claim["evidence_refs"]:
+        if r in arts and arts[r]["media_type"] != PROVENANCE_MEDIA and r in records:
+            try:
+                doc = _strict(files[arts[r]["relative_path"]])
+            except Reject:
+                continue
+            if isinstance(doc, dict) and claim["subject"] in doc:
+                return doc[claim["subject"]]
+    raise Reject("pipeline document not found for key derivation")
+
+
+def _evaluation_key(doc, target, rule_version):
+    """Own derivation of composition.evaluation_key: normalise the raw document, keep what a targeted verdict reads, hash it."""
+    def tags(x):
+        return dict(x) if isinstance(x, dict) else {}
+    ext = {e["artifact"]: {"artifact": e["artifact"], "tags": tags(e.get("tags")), "generation": e.get("generation"),
+                           "assumption": e.get("assumption")} for e in doc.get("external", [])}
+    A = {}
+    for a in doc["activities"]:
+        A[a["id"]] = {"id": a["id"],
+                      "consumes": [{"artifact": c["artifact"], "requires": {k: ({"equals": v} if not isinstance(v, dict) else v)
+                                                                            for k, v in (c.get("requires") or {}).items()}}
+                                   for c in a.get("consumes", [])],
+                      "produces": [{"artifact": p["artifact"], "tags": tags(p.get("tags")), "generation": p.get("generation")}
+                                   for p in a.get("produces", [])],
+                      "depends_on": list(a.get("depends_on", [])), "conversion": a.get("conversion")}
+    made = {}
+    for aid, a in A.items():
+        for p in a["produces"]:
+            made.setdefault(p["artifact"], []).append(aid)
+    preds = {aid: set() for aid in A}
+    for aid, a in A.items():
+        for d in a["depends_on"]:
+            if d in A and d != aid:
+                preds[aid].add(d)
+        for c in a["consumes"]:
+            preds[aid].update(s for s in made.get(c["artifact"], []) if s != aid)
+    scope, todo = {target}, [target]
+    while todo:
+        for u in preds[todo.pop()]:
+            if u not in scope:
+                scope.add(u)
+                todo.append(u)
+    touched = {c["artifact"] for i in scope for c in A[i]["consumes"]} | {p["artifact"] for i in scope for p in A[i]["produces"]}
+    groups = [[{"artifact": art,
+                "producers": [{"activity": w, "generation": next((p["generation"] for p in A[w]["produces"] if p["artifact"] == art), None)}
+                              for w in made.get(art, [])],
+                "external": ext.get(art)} for art in g] for g in doc.get("same_generation", [])]
+    body = {"key_version": "1", "rule_version": rule_version, "target": target,
+            "conversions": sorted([a, b, f] for (a, b), f in _CONV.items()),
+            "activities": [A[i] for i in sorted(scope)],
+            "external": [ext[a] for a in sorted(touched & ext.keys())],
+            "producers": {a: sorted(made[a]) for a in sorted(touched & made.keys())},
+            "internal_and_external": sorted(set(made) & set(ext)),
+            "same_generation": groups}
+    return "composition-evaluation:sha256:" + hashlib.sha256(b"composition-evaluation\x00" + _canon(body)).hexdigest()
 
 
 _CONV = {("seconds", "milliseconds"): "1000", ("milliseconds", "seconds"): "0.001", ("minutes", "seconds"): "60",

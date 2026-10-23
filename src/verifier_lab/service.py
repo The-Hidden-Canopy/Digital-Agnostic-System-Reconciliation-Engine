@@ -965,6 +965,40 @@ class Service:
         return [self.get_run(r["id"], include_findings=False)
                 for r in self.store.q("SELECT id FROM runs ORDER BY created_seq DESC")]
 
+    def compare_runs(self, new_run_id: str, old_run_id: str) -> dict:
+        """Which targeted composition results an evidence change cannot have altered: equal evaluation keys, same claim."""
+        new, old = self.get_run(new_run_id), self.get_run(old_run_id)
+        for run in (new, old):
+            if run["state"] != "SUCCEEDED":
+                raise ServiceError(409, "run_not_complete", run["id"])
+
+        def keyed(run):
+            out = {}
+            for f in run["findings"]:
+                analysis = (f.get("witness") or {}).get("analysis") or {}
+                if analysis.get("evaluation_key"):
+                    out[f["claim_id"]] = f
+            return out
+        before, after = keyed(old), keyed(new)
+        rows = []
+        for claim_id, f in sorted(after.items()):
+            key = f["witness"]["analysis"]["evaluation_key"]
+            prev = before.get(claim_id)
+            if prev is None:
+                status = "NOT_IN_EARLIER_RUN"
+            elif prev["witness"]["analysis"]["evaluation_key"] != key or prev["rule_version"] != f["rule_version"]:
+                status = "MUST_REEVALUATE"
+            else:
+                status = "UNCHANGED"
+            rows.append({"claim_id": claim_id, "subject": (f.get("claim") or {}).get("subject"),
+                         "target": ((f.get("claim") or {}).get("arguments") or {}).get("target"), "status": status,
+                         "verdict": f["verdict"], "earlier_verdict": prev["verdict"] if prev else None,
+                         "evaluation_key": key})
+        return {"run": new_run_id, "against": old_run_id, "items": rows,
+                "statement": "UNCHANGED means the target's ancestors, the declarations it reads and the rule version are identical, so its "
+                             "obligations cannot differ; it does not mean the evidence file is byte-identical. Results without an "
+                             "evaluation key (untargeted checks, other predicates) are not listed and must be re-evaluated."}
+
     def export_run(self, run_id: str) -> Path:
         row = self.store.q1("SELECT * FROM runs WHERE id=?", (run_id,))
         if not row:

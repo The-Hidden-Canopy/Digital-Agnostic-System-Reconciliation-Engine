@@ -417,7 +417,10 @@ class CompositionValid(BaseRule):
             return _finding(claim, Verdict.HUMAN_REVIEW_REQUIRED, self, "evidence_conflict", g, {**w, "sources": [r for r, _ in found]})
         ref, doc = found[0]
         try:
-            analysis = CP.analyze(CP.parse_pipeline(doc), claim.arguments.get("target"))
+            pipeline = CP.parse_pipeline(doc)
+            analysis = CP.analyze(pipeline, claim.arguments.get("target"))
+            if claim.arguments.get("target"):                         # lets later runs see which targeted results an edit cannot have changed
+                analysis["evaluation_key"] = CP.evaluation_key(pipeline, claim.arguments["target"], self.rule_version)
         except CP.PipelineError as exc:
             return _finding(claim, Verdict.INVALID_EVIDENCE, self, "malformed_pipeline", g, {**w, "pipeline_source": ref, "detail": str(exc)[:300]})
         overall = analysis["overall"]

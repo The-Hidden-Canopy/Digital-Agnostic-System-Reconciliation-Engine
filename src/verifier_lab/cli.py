@@ -223,6 +223,9 @@ def _main(argv: list[str] | None) -> int:
     s.add_argument("--arguments", required=True, help="JSON object with the predicate arguments")
     s.add_argument("--reason", required=True)
     s.add_argument("--idempotency-key")
+    s = sub.add_parser("reuse", help="list targeted composition results unaffected by the change between two runs")
+    s.add_argument("run_id")
+    s.add_argument("--against", required=True, help="earlier run id")
     s = sub.add_parser("approve", help="approve candidates as claims")
     s.add_argument("ids", nargs="+")
     s = sub.add_parser("reject", help="reject candidates (reason required)")
@@ -370,6 +373,9 @@ def _main(argv: list[str] | None) -> int:
             if job["state"] != "SUCCEEDED":
                 return FAILED
             return OK if all(f["verdict"] == "SUPPORTED" for f in run["findings"]) else ATTENTION
+        if args.cmd == "reuse":
+            _out(svc.compare_runs(args.run_id, args.against))
+            return OK
         if args.cmd == "export":
             out = Path(args.output)
             if out.exists():

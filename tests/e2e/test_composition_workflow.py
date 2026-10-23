@@ -48,6 +48,32 @@ class CompositionRuns(WorkspaceCase):
         self.assertEqual(scoped["witness"]["analysis"]["scope"]["not_evaluated"], ["side"])
         self.assertEqual(verify_package(svc.export_run(svc.list_runs()[0]["id"]))["status"], "VERIFIED")
 
+    def test_reuse_report_separates_unaffected_from_affected_targets(self):
+        svc = self.new_service("reuse")
+        spec = self.imp(SPEC, "spec.md", svc=svc)
+        claim = self.claim(svc, spec["id"], "report")
+        base = json.loads((FIX / "scoped.json").read_text())
+        unrelated = copy.deepcopy(base)
+        unrelated["pipeline"]["activities"][2]["produces"][0]["generation"] = "g7"            # only the 'side' branch
+        relevant = copy.deepcopy(base)
+        relevant["pipeline"]["activities"][0]["produces"][0]["tags"]["unit"] = "milliseconds"  # an ancestor of 'report'
+
+        def run(doc, name):
+            ev = self.imp(json.dumps(doc).encode(), name, svc=svc)
+            started = svc.start_run([claim], [ev["id"]])
+            self.assertEqual(svc.wait_job(started["job_id"])["state"], "SUCCEEDED")
+            return started["run_id"]
+        first, second, third = run(base, "a.json"), run(unrelated, "b.json"), run(relevant, "c.json")
+        same = svc.compare_runs(second, first)["items"]
+        self.assertEqual([i["status"] for i in same], ["UNCHANGED"])
+        self.assertEqual(same[0]["verdict"], same[0]["earlier_verdict"])
+        moved = svc.compare_runs(third, first)["items"]
+        self.assertEqual([i["status"] for i in moved], ["MUST_REEVALUATE"])
+        self.assertNotEqual(moved[0]["verdict"], moved[0]["earlier_verdict"])
+        with self.assertRaises(ServiceError) as cm:
+            svc.compare_runs(first, "run:nope")
+        self.assertEqual(cm.exception.status, 404)
+
     def test_assumptions_travel_with_a_supported_finding(self):
         w = self.run_fixture("good")["findings"][0]["witness"]["analysis"]
         self.assertTrue(w["conditional_on"])
@@ -125,6 +151,26 @@ class CompositionTamper(CompositionRuns):
         res = verify_package(d)
         self.assertEqual(res["status"], "REJECTED")
         self.assertTrue(any("re-derived CONTRADICTED" in f["detail"] for f in res["findings"]))
+
+    def test_targeted_findings_carry_an_independently_checked_evaluation_key(self):
+        svc = self.new_service("keyed")
+        run = self.run_fixture("scoped", "report", svc)
+        key = run["findings"][0]["witness"]["analysis"]["evaluation_key"]
+        self.assertTrue(key.startswith("composition-evaluation:sha256:"))
+        self.assertNotIn("evaluation_key", self.run_fixture("good", svc=self.new_service("whole"))["findings"][0]["witness"]["analysis"])
+        pkg = self.tmp / "keyed-pkg"
+        with zipfile.ZipFile(svc.export_run(run["id"])) as zf:
+            zf.extractall(pkg)
+        self.assertEqual(verify_package(pkg)["status"], "VERIFIED")
+        r = json.loads((pkg / "result.json").read_bytes())
+        for f in r["findings"]:
+            f["witness"]["analysis"]["evaluation_key"] = "composition-evaluation:sha256:" + "0" * 64   # would let a stale result be reused
+            f["id"] = record_id("finding", {k: v for k, v in f.items() if k != "id"})
+        (pkg / "result.json").write_bytes(canonical_bytes(r))
+        self.rehash(pkg)
+        res = verify_package(pkg)
+        self.assertEqual(res["status"], "REJECTED")
+        self.assertTrue(any("evaluation_key" in f["detail"] for f in res["findings"]))
 
     def test_hiding_an_obligation_is_rejected_even_if_the_verdict_stays_right(self):
         d = self.fresh()

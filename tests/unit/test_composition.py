@@ -269,6 +269,26 @@ class EvaluationKey(unittest.TestCase):
         with self.assertRaises(CP.PipelineError):
             self.key(p, "nope")
 
+    def test_checker_derives_the_same_key_independently(self):
+        gen = ProducerCheckerDifferential().random_pipeline
+        rng = random.Random(31)
+        compared = 0
+        for _ in range(500):
+            raw = gen(rng)
+            try:
+                parsed = CP.parse_pipeline(copy.deepcopy(raw))
+            except CP.PipelineError:
+                continue
+            target = rng.choice(parsed["activities"])["id"]
+            self.assertEqual(checker._evaluation_key(copy.deepcopy(raw), target, "1"), CP.evaluation_key(parsed, target, "1"), (raw, target))
+            compared += 1
+        self.assertGreater(compared, 250)
+        for name in ("good", "scoped", "units-converted", "generation-mismatch"):
+            raw = load(name)
+            for a in CP.parse_pipeline(copy.deepcopy(raw))["activities"]:
+                self.assertEqual(checker._evaluation_key(copy.deepcopy(raw), a["id"], "1"),
+                                 CP.evaluation_key(CP.parse_pipeline(copy.deepcopy(raw)), a["id"], "1"), (name, a["id"]))
+
     def test_equal_keys_imply_equal_verdicts_on_random_edits(self):
         gen = ProducerCheckerDifferential().random_pipeline
         rng = random.Random(23)
