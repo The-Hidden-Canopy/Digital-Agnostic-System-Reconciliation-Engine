@@ -186,6 +186,14 @@ def _packs(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:  # unreadable or non-JSON input file
+        _err(f"cannot use input file: {type(exc).__name__}: {exc}")
+        return FAILED
+
+
+def _main(argv: list[str] | None) -> int:
     ap = argparse.ArgumentParser(prog="verifier-lab", description=__doc__.split("\n\n")[0])
     ap.add_argument("--workspace", default=".workspace", help="local workspace directory (default: .workspace)")
     ap.add_argument("--parser-isolation", choices=["required", "portable"], default="required",

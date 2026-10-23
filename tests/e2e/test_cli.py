@@ -70,3 +70,19 @@ class Cli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CliInputFailures(unittest.TestCase):
+    def test_unreadable_or_malformed_input_files_are_reported_not_tracebacks(self):
+        with tempfile.TemporaryDirectory() as ws:
+            missing = str(Path(ws) / "missing.json")
+            garbage = Path(ws) / "garbage.json"
+            garbage.write_bytes(b"\xff\xfe{not json")
+            for args in (("validate", missing), ("pack", "install", missing), ("pack", "diff", missing, missing),
+                         ("campaign", "verify", "--report", missing, "--manifest", missing),
+                         ("campaign", "verify", "--report", str(garbage), "--manifest", str(garbage)),
+                         ("check", "--evidence", "x", "--context-file", str(garbage))):
+                rc, _, err = cli(*args, ws=ws)
+                self.assertNotEqual(rc, 0, args)
+                self.assertNotIn("Traceback", err, args)
+                self.assertTrue(err.strip(), args)
