@@ -27,6 +27,26 @@ History is read from facts `<history>[i].stage` (string), `.seq` (integer), `.cl
 unordered. Role **bindings** (supplied per run) map a role to one or more fact keys; roles are never inferred from file names.
 Per-obligation ids: `role:<role>`, `coherence:<id>`, `lifecycle:records|prerequisites|current_validity`.
 
+
+### Purpose applicability (`applies_when`, optional)
+
+A profile may carry `applies_when`: a predicate in the risk-pack grammar (`eq|in|exists|and|or|not`, three-valued, no coercion) over the
+run's **context facts** (the same `--context KEY=VALUE` facts risk packs use). It states when the purpose is the right question to ask, not what
+the evidence says. Evaluation adds a first obligation, `applicability`, and never lets a missing fact become "not applicable":
+
+| `applies_when` | `applicability` obligation | other obligations | overall |
+|---|---|---|---|
+| TRUE (or field absent: no obligation is added) | `SUPPORTED` / `applicability_established_true` | evaluated as usual | as usual |
+| FALSE | `NOT_APPLICABLE` / `applicability_established_false` | **not evaluated** and listed as not evaluated | `NOT_APPLICABLE` |
+| UNKNOWN | `INSUFFICIENT_EVIDENCE` / `applicability_unknown`, naming the facts that would resolve it | evaluated so the reader still sees them | never `SUPPORTED`; `CONTRADICTED`/`INVALID_EVIDENCE` still win |
+
+The obligation's witness records the facts consulted and their values. Context facts travel in the bundle (`context-facts+json`) whenever a risk pack or an
+applicability-bearing purpose is part of the run, so the independent checker re-derives the result with its own evaluator and rejects a laundered
+`NOT_APPLICABLE`, a dropped obligation or altered context. `strengthens()` refuses to compare profiles when either has `applies_when` (reason
+`applicability_conditions_not_comparable`), because "needs less evidence" is meaningless across different scopes. The decision is data-only: a profile can never fetch,
+execute or configure anything. Profiles without `applies_when` behave exactly as before. A human cannot override FALSE here; a reviewer who believes the facts are wrong
+changes the context and reruns, which keeps the decision auditable.
+
 ## Pipeline description (read by `composition.valid` and the Composition page)
 
 A JSON object under a key you choose (default `pipeline`): `{external[], activities[], same_generation[]}`.
