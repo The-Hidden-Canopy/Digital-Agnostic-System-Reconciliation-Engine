@@ -199,6 +199,14 @@ class FailureStates(ServerCase):
                            ({"action": "REJECT", "reason": 12}, "bad_reason")):
             self.assertClientError(self.call("POST", "/api/v1/candidates/nope/decisions", body), 422, code)
 
+    def test_reextract_rejects_malformed_dialect(self):
+        s, imported, _ = self.call("POST", "/api/v1/sources", b"# note\n", headers={"X-Filename": "retry-input.md"})
+        self.assertEqual(s, 202, imported)
+        source_id = quote(imported["source"]["id"])
+        for dialect in ([], 4, False, {}):
+            self.assertClientError(self.call("POST", f"/api/v1/sources/{source_id}/reextract", {"dialect": dialect}),
+                                   422, "bad_dialect")
+
 
 class HttpWorkflow(ServerCase):
     def test_import_review_run_export_over_http_with_keepalive(self):

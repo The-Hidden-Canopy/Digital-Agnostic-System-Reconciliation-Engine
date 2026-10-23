@@ -204,6 +204,8 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 * Explicit false or null run lists, purposes and context are now rejected as malformed requests instead of
   being interpreted as omitted values. Decision actions and reasons have type checks, so non-string values
   produce 422 client errors before decision processing.
+* A malformed re-extraction dialect is rejected before admission creates another attempt, including for
+  formats where dialect choice has no meaning.
 
 ## CI host capability note
 

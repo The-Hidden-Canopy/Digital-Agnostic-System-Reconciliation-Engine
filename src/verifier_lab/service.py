@@ -206,6 +206,8 @@ class Service:
     # ------------------------------------------------------------------- import
     def import_source(self, data: bytes, filename: str | None, declared_type: str | None = None,
                       dialect: str | None = None, replaces: str | None = None, *, retry: bool = False) -> dict:
+        if dialect is not None and not isinstance(dialect, str):
+            raise ServiceError(422, "bad_dialect", "dialect must be a string")
         try:
             adm = admit(data, filename, declared_type, self.store.blobs, self.admission)
         except AdmissionError as exc:
