@@ -8,7 +8,7 @@ and advanced breadth to follow a usable generic release.
 | Build area | Current implementation and evidence | Remaining scope |
 |---|---|---|
 | Contracts and deterministic dispatch (01–02) | `model.py`, `canonical.py`, `validation.py`, `engine.py`; contract vectors, hash-seed and adversarial tests | Broader platform evidence; additional rule families need their own witness contracts |
-| Composition (03) | `composition.py`, `graph.py`; cycle/closure/tag/unit obligations, targeted scope, change-impact paths, independent checker, UI | Wiring `evaluation_key` into incremental re-evaluation (the key itself exists and is property-tested); wider constraint vocabulary |
+| Composition (03) | `composition.py`, `graph.py`; cycle/closure/tag/unit obligations, targeted scope, change-impact paths, independent checker, UI | Skipping evaluation using `evaluation_key` (keys are reported, checker-verified and compared across runs, but evaluation always re-runs); wider constraint vocabulary |
 | Purpose-relative completeness (04) | `purposes.py`; role binding, generation coherence, lifecycle obligations, UI/export/checker | Conditional applicability and richer coherence rules; user profile editing |
 | Stateful experiments and reduction (05, 07) | Independent reference/candidate KV store, transformation pipeline and seeded scheduler; three-way replay, KV crash enumeration, bounded reduction and fresh-process verification; external KV subject adapter | Broader stateful-system coverage; isolation of explicitly supplied external programs remains separate |
 | Temporal reasoning (06) | Exact decimal interval reasoning and `interval.relation`; independent re-derivation | Richer temporal UI and additional rule families |

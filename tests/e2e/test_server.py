@@ -187,6 +187,10 @@ class FailureStates(ServerCase):
             self.assertEqual(s, 422, (kind, body, resp))
             self.assertIn("error", resp)
 
+    def test_reuse_endpoint_requires_an_earlier_run_that_exists(self):
+        self.assertClientError(self.call("GET", "/api/v1/runs/nope/reuse"), 422, "bad_query")
+        self.assertClientError(self.call("GET", "/api/v1/runs/nope/reuse?against=also-nope"), 404, "run_not_found")
+
     def test_decisions_require_known_action_and_precondition(self):
         s, body, _ = self.call("POST", "/api/v1/candidates/nope/decisions", {"action": "REJECT", "reason": "x"})
         self.assertEqual(s, 404, body)
