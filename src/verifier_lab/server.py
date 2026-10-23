@@ -197,6 +197,8 @@ class Handler(BaseHTTPRequestHandler):
                 path = svc.export_run(parts[1])
                 return self._send(200, path.read_bytes(), "application/zip",
                                   {"Content-Disposition": 'attachment; filename="verification-package.zip"'})
+            if parts == ["graph"]:
+                return self._json(200, svc.workspace_graph())
             if parts == ["jobs"]:
                 return self._json(200, {"items": svc.list_jobs()})
             if len(parts) == 2 and parts[0] == "jobs":

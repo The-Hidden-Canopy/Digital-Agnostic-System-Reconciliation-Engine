@@ -187,6 +187,11 @@ class FailureStates(ServerCase):
             self.assertEqual(s, 422, (kind, body, resp))
             self.assertIn("error", resp)
 
+    def test_graph_endpoint_of_an_empty_workspace(self):
+        s, body, _ = self.call("GET", "/api/v1/graph")
+        self.assertEqual(s, 200)
+        self.assertEqual((body["nodes"], body["edges"], body["truncated"]), ([], [], False))
+
     def test_reuse_endpoint_requires_an_earlier_run_that_exists(self):
         self.assertClientError(self.call("GET", "/api/v1/runs/nope/reuse"), 422, "bad_query")
         self.assertClientError(self.call("GET", "/api/v1/runs/nope/reuse?against=also-nope"), 404, "run_not_found")

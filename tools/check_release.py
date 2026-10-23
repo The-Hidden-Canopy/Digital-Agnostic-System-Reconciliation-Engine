@@ -175,7 +175,7 @@ def main() -> None:
                 if audit_enabled:
                     audits = [json.loads(line.removeprefix('accessibility: ')) for line in
                               (logs / 'browser.log').read_text().splitlines() if line.startswith('accessibility: ')]
-                    expected_pages = {'import', 'review', 'run', 'findings', 'advanced', 'campaign', 'composition', 'export', 'authoring'}
+                    expected_pages = {'import', 'review', 'run', 'findings', 'advanced', 'campaign', 'composition', 'export', 'authoring', 'replay', 'graph'}
                     if {a['page'] for a in audits} != expected_pages:
                         raise RuntimeError('required populated accessibility audits did not all execute')
                     (out / 'accessibility.json').write_text(json.dumps(audits, indent=2) + '\n')

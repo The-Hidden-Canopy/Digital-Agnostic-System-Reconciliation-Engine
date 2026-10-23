@@ -970,6 +970,43 @@ class Service:
         return [self.get_run(r["id"], include_findings=False)
                 for r in self.store.q("SELECT id FROM runs ORDER BY created_seq DESC")]
 
+    def workspace_graph(self, limit: int = 200) -> dict:
+        """What depends on what: sources -> claim revisions -> runs, with replacement links and run staleness.
+
+        Edges point from a dependency to what depends on it, so everything downstream of a node is what its change can invalidate."""
+        nodes: dict[str, dict] = {}
+        edges: set[tuple[str, str, str]] = set()
+        truncated = False
+        sources = self.store.q("SELECT id, display_name, superseded_by FROM sources ORDER BY created_seq DESC LIMIT ?", (limit + 1,))
+        claims = self.store.q("SELECT id, candidate_id, status, body_json FROM claim_revisions ORDER BY created_seq DESC LIMIT ?", (limit + 1,))
+        runs = self.store.q("SELECT * FROM runs ORDER BY created_seq DESC LIMIT ?", (limit + 1,))
+        for rows in (sources, claims, runs):
+            truncated = truncated or len(rows) > limit
+        for r in sources[:limit]:
+            nodes[r["id"]] = {"id": r["id"], "kind": "source", "label": r["display_name"],
+                              "state": "SUPERSEDED" if r["superseded_by"] else "CURRENT"}
+            if r["superseded_by"]:
+                edges.add((r["id"], r["superseded_by"], "replaced_by"))
+        for r in claims[:limit]:
+            body = jload(r["body_json"])
+            nodes[r["id"]] = {"id": r["id"], "kind": "claim", "label": f'{body["subject"]} ({body["predicate"]})', "state": r["status"]}
+            edges.add((body["origin"]["source_id"], r["id"], "states"))
+        for r in runs[:limit]:
+            deps = jload(r["deps_json"])
+            fresh = self._freshness(r)
+            nodes[r["id"]] = {"id": r["id"], "kind": "run", "label": "run " + r["id"][-8:], "state": r["state"] if fresh["state"] == "UNKNOWN" else fresh["state"],
+                              "causes": [c["kind"] for c in fresh["causes"]]}
+            for rid in deps["claim_revisions"]:
+                edges.add((rid, r["id"], "tested"))
+            for sid in deps["evidence"]:
+                edges.add((sid, r["id"], "evidence"))
+        edges = {e for e in edges if e[0] in nodes and e[1] in nodes}           # a truncated view never shows dangling edges
+        layer = {"source": 0, "claim": 1, "run": 2}
+        return {"nodes": sorted(nodes.values(), key=lambda n: (layer[n["kind"]], n["label"], n["id"])),
+                "edges": [{"from": a, "to": b, "relation": rel} for a, b, rel in sorted(edges)],
+                "truncated": truncated, "limit": limit,
+                "note": "Downstream of a node is what a change to it can invalidate. Staleness is the stored run freshness check, not a re-evaluation."}
+
     def compare_runs(self, new_run_id: str, old_run_id: str) -> dict:
         """Which targeted composition results an evidence change cannot have altered: equal evaluation keys, same claim."""
         new, old = self.get_run(new_run_id), self.get_run(old_run_id)

@@ -146,10 +146,14 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
     await page.fill('#x-ops', '12');
     await page.click('button:has-text("Run three-way experiment")');
     await page.waitForSelector('text=No divergence');
+    assert.ok((await page.innerText('main')).includes('agreed on every operation'));      // timeline: every path matched
     await page.selectOption('#x-defect', defectName);
     await page.click('button:has-text("Run three-way experiment")');
     await page.waitForSelector('.notice.bad');
     assert.ok((await page.innerText('main')).includes('state.'));
+    assert.ok(await page.locator('main tr', { hasText: 'diverged at operation' }).count() > 0);  // the picture's table names where each path broke
+    assert.ok(await page.locator('main svg[aria-hidden=true]').count() > 0);
+    if (system === 'pipeline') await audit(page, 'replay');
     await page.click('button:has-text("Minimize the failure")');
     await page.waitForSelector('text=Fresh-process reproduction: VERIFIED', { timeout: 60000 });
     const [counterexample] = await Promise.all([page.waitForEvent('download'), page.click('text=Download counterexample')]);
@@ -328,6 +332,15 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.click('button:has-text("Verify with the independent checker")');
   await page.waitForSelector('.notice.ok, .notice.bad');
   assert.strictEqual(await page.textContent('.notice.ok strong'), 'VERIFIED');
+
+  // 5b. dependency graph: every source, claim and run with its dependencies; choosing an item shows what a change reaches
+  await page.goto(BASE + '#/graph');
+  await page.waitForSelector('h1:has-text("what depends on what")');
+  assert.ok(await page.locator('main table tbody tr').count() >= 3);
+  await page.locator('tr', { hasText: 'product-spec.md' }).first().getByRole('button', { name: /affects/ }).click();
+  await page.waitForSelector('text=a change reaches');
+  assert.ok(await page.locator('svg rect[stroke="var(--bad)"]').count() > 1);                 // the source and something downstream are marked
+  await audit(page, 'graph');
 
   // 6. keyboard only: first Tab stop is the skip link; Enter moves focus to <main>; Tab order then walks the five steps
   let kp = await browser.newPage();

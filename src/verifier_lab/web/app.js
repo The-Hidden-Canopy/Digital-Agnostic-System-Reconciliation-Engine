@@ -661,6 +661,114 @@ async function viewExport() {
       h("div", { class: "row" }, dl, ver), out));
 }
 
+/* ---------------------------------------------------------------- shared SVG + replay timeline + dependency graph */
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs, text) {
+  const e = document.createElementNS(SVG_NS, tag);
+  Object.entries(attrs || {}).forEach(([k, v]) => e.setAttribute(k, v));
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+/* Each path of a replay experiment on one operation axis. The table below the picture states the same facts in words. */
+function replayTimeline(r) {
+  const c = r.coverage || {}, n = c.operations, b = c.boundary, steps = c.steps_compared_per_path || {};
+  if (!Number.isInteger(n) || n < 1) return null;
+  const names = c.paths || [...new Set([...Object.keys(steps), ...r.divergences.map((d) => d.path)])];
+  if (!names.length) return null;
+  const rows = names.map((path) => {
+    const first = r.divergences.find((d) => d.path === path), point = !(path in steps);
+    const start = path === "continuous" ? 0 : (Number.isInteger(b) ? b : 0), compared = steps[path] || 0, reached = point ? start : start + compared;
+    const agreedEnd = first ? Math.min(first.op_index, reached) : reached;
+    return { path, start, point, compared, first, reached, agreedEnd,
+      text: first ? `diverged at operation ${first.op_index} (${first.field})` : point ? "state at the checkpoint boundary matched"
+        : reached >= n ? "agreed on every operation" : `stopped after ${compared} step(s)` };
+  });
+  const L = 120, W = 520, ROW = 34, TOP = 28, x = (i) => L + (i / n) * W;
+  const svg = svgEl("svg", { width: L + W + 20, height: TOP + rows.length * ROW + 24, "aria-hidden": "true", role: "img" });
+  rows.forEach((row, k) => {
+    const y = TOP + k * ROW;
+    svg.append(svgEl("text", { x: 4, y: y + 17, fill: "var(--fg)", "font-size": 13 }, row.path));
+    svg.append(svgEl("rect", { x: x(row.start), y: y + 4, width: Math.max(1, x(n) - x(row.start)), height: 18, fill: "none", stroke: "var(--muted)", "stroke-dasharray": "4 3" }));
+    if (row.agreedEnd > row.start) svg.append(svgEl("rect", { x: x(row.start), y: y + 4, width: x(row.agreedEnd) - x(row.start), height: 18, fill: "var(--ok)", opacity: 0.55 }));
+    if (row.point && !row.first) svg.append(svgEl("path", { d: `M${x(row.start)} ${y + 3} l7 10 l-7 10 l-7 -10 z`, fill: "var(--ok)" }));
+    if (row.first) {
+      const px = x(Math.min(row.first.op_index, n - 1));
+      svg.append(svgEl("rect", { x: px, y: y + 2, width: Math.max(4, W / n), height: 22, fill: "var(--bad)" }));
+      svg.append(svgEl("text", { x: px + 8, y: y + 18, fill: "var(--bad)", "font-size": 14, "font-weight": 700 }, "✕"));
+    }
+  });
+  if (Number.isInteger(b)) {
+    svg.append(svgEl("line", { x1: x(b), y1: TOP - 8, x2: x(b), y2: TOP + rows.length * ROW, stroke: "var(--info)", "stroke-width": 2, "stroke-dasharray": "2 3" }));
+    svg.append(svgEl("text", { x: x(b) + 4, y: TOP - 12, fill: "var(--info)", "font-size": 12 }, `checkpoint at ${b}`));
+  }
+  svg.append(svgEl("text", { x: L, y: TOP + rows.length * ROW + 16, fill: "var(--muted)", "font-size": 12 }, "operation 0"));
+  svg.append(svgEl("text", { x: L + W - 60, y: TOP + rows.length * ROW + 16, fill: "var(--muted)", "font-size": 12 }, `operation ${n}`));
+  return h("div", { class: "card" }, h("h3", { text: "Replay timeline" }),
+    h("p", { class: "muted", text: "Solid bar: operations that matched the reference. ✕: first divergence. Dashed outline: operations this path would have covered. Diamond: a single comparison at the checkpoint. The table says the same thing in words." }),
+    h("div", { style: "overflow:auto" }, svg),
+    h("div", { class: "tablewrap" }, h("table", {}, h("caption", { class: "sr-only", text: "Replay paths and where each one stopped agreeing" }),
+      h("thead", {}, h("tr", {}, ["Path", "Covers operations", "Compared", "Result"].map((t) => h("th", { text: t })))),
+      h("tbody", {}, rows.map((row) => h("tr", {}, h("td", { text: row.path }), h("td", { text: row.point ? `boundary ${row.start}` : `${row.start} to ${n - 1}` }),
+        h("td", { text: row.point ? "1 state" : `${row.compared} step(s)` }), h("td", {}, row.first ? badge("diverged", "b-bad") : badge("agreed", "b-ok"), " " + row.text)))))));
+}
+
+/* What depends on what across the workspace; the impact selector shows everything a change to one item can invalidate. */
+async function viewGraph() {
+  setNav("");
+  const live = begin();
+  const g = await api("GET", "graph");
+  if (!live()) return;
+  const out = h("div", { role: "status", "aria-live": "polite" }), graphBox = h("div", { style: "overflow:auto" });
+  const byId = new Map(g.nodes.map((n) => [n.id, n]));
+  const down = new Map(), up = new Map();
+  g.edges.forEach((e) => { (down.get(e.from) || down.set(e.from, []).get(e.from)).push(e); (up.get(e.to) || up.set(e.to, []).get(e.to)).push(e); });
+  const affectedBy = (id) => { const seen = new Set(), stack = [id]; while (stack.length) for (const e of down.get(stack.pop()) || []) if (!seen.has(e.to)) { seen.add(e.to); stack.push(e.to); } return seen; };
+  const KINDS = ["source", "claim", "run"], W = 200, H = 34, GX = 70, GY = 14, WARN = ["STALE", "SUPERSEDED", "RETRACTED", "REJECTED"];
+  const draw = (focus) => {
+    const hit = focus ? affectedBy(focus) : new Set(), pos = {}, counts = [0, 0, 0];
+    g.nodes.forEach((n) => { const col = KINDS.indexOf(n.kind); pos[n.id] = { x: 10 + col * (W + GX), y: 24 + counts[col]++ * (H + GY) }; });
+    const svg = svgEl("svg", { width: 20 + 3 * (W + GX), height: 40 + Math.max(1, ...counts) * (H + GY), "aria-hidden": "true", role: "img" });
+    KINDS.forEach((k, i) => svg.append(svgEl("text", { x: 10 + i * (W + GX), y: 14, fill: "var(--muted)", "font-size": 12 }, k === "source" ? "Sources" : k === "claim" ? "Claim revisions" : "Runs")));
+    g.edges.forEach((e) => {
+      const a = pos[e.from], b = pos[e.to]; if (!a || !b) return;
+      const on = focus && (e.from === focus || hit.has(e.from)) && hit.has(e.to);
+      svg.append(svgEl("line", { x1: a.x + W, y1: a.y + H / 2, x2: b.x, y2: b.y + H / 2, stroke: on ? "var(--bad)" : "var(--line)", "stroke-width": on ? 2.5 : 1.2, "stroke-dasharray": e.relation === "replaced_by" ? "4 3" : "0" }));
+    });
+    g.nodes.forEach((n) => {
+      const p = pos[n.id], stale = WARN.includes(n.state), marked = n.id === focus || hit.has(n.id);
+      const grp = svgEl("g", { opacity: focus && !marked ? 0.45 : 1 });
+      grp.append(svgEl("rect", { x: p.x, y: p.y, width: W, height: H, rx: 6, fill: "var(--card)", stroke: marked ? "var(--bad)" : "var(--line)", "stroke-width": marked ? 2.5 : 1.5, "stroke-dasharray": stale ? "5 3" : "0" }));
+      const label = (n.label.length > 24 ? n.label.slice(0, 23) + "…" : n.label) + (stale ? "  (" + n.state.toLowerCase() + ")" : "");
+      grp.append(svgEl("text", { x: p.x + 8, y: p.y + 22, fill: "var(--fg)", "font-size": 12 }, label));
+      svg.append(grp);
+    });
+    put(graphBox, svg);
+  };
+  const show = (n) => {
+    const list = [...affectedBy(n.id)].map((id) => byId.get(id)).filter(Boolean);
+    draw(n.id);
+    put(out, h("div", { class: "notice" }, h("strong", { text: n.label }), list.length ? ` - a change reaches ${list.length} item(s):` : " - nothing depends on this.",
+      list.length ? h("ul", {}, list.map((x) => h("li", {}, `${x.kind}: ${x.label}`))) : null));
+    announce(`${list.length} dependent item(s)`);
+  };
+  draw(null);
+  const rel = { states: "states the claim", tested: "tested by", evidence: "used as evidence", replaced_by: "replaced by" };
+  put(main, h("h1", { text: "Advanced: what depends on what" }),
+    h("div", { class: "notice", text: g.note + (g.truncated ? ` Showing the newest ${g.limit} of each kind only.` : "") }),
+    g.nodes.length ? null : h("p", { class: "muted", text: "Nothing imported yet." }),
+    h("div", { class: "card" }, h("h2", { text: "Graph" }), graphBox,
+      h("p", { class: "muted", text: "Dashed outline: stale, superseded or retracted. Choose “Show what this affects” in the table to highlight everything downstream." })),
+    out,
+    h("div", { class: "card" }, h("h2", { text: "Every item" }), h("div", { class: "tablewrap" }, h("table", {}, h("caption", { class: "sr-only", text: "Workspace items and their dependencies" }),
+      h("thead", {}, h("tr", {}, ["Kind", "Item", "State", "Depends on", "Impact"].map((t) => h("th", { text: t })))),
+      h("tbody", {}, g.nodes.map((n) => h("tr", {}, h("td", { text: n.kind }), h("td", { text: n.label }),
+        h("td", {}, badge(n.state.toLowerCase(), WARN.includes(n.state) ? "b-warn" : "b-neutral"),
+          n.causes && n.causes.length ? h("div", { class: "muted", text: n.causes.join(", ").replace(/_/g, " ") }) : null),
+        h("td", { text: (up.get(n.id) || []).map((e) => `${rel[e.relation] || e.relation}: ${byId.get(e.from).label}`).join("; ") || "-" }),
+        h("td", {}, h("button", { type: "button", text: "Show what this affects", "aria-label": "Show what changing " + n.label + " affects", onclick: () => show(n) })))))))));
+}
+
 /* ---------------------------------------------------------------- advanced */
 async function viewAdvanced() {
   setNav("");
@@ -684,7 +792,7 @@ async function viewAdvanced() {
     ` - case ${r.case.slice(0, 20)}…, paths: ${Object.entries(r.coverage.steps_compared_per_path || {}).map(([k, v]) => `${k} ${v} steps`).join(", ")}. This is a bounded statement about this subject over these operations, not universal correctness.`),
     r.divergences.length ? h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Path", "Operation", "Field", "Expected", "Actual"].map((t) => h("th", { text: t })))),
       h("tbody", {}, r.divergences.slice(0, 20).map((d) => h("tr", {}, h("td", { text: d.path }), h("td", { text: String(d.op_index) }), h("td", { class: "mono", text: d.field }), h("td", { class: "mono", text: JSON.stringify(d.expected) }), h("td", { class: "mono", text: JSON.stringify(d.actual) })))))) : null,
-    r.errors.length ? errorBox(new Error(JSON.stringify(r.errors))) : null);
+    replayTimeline(r), r.errors.length ? errorBox(new Error(JSON.stringify(r.errors))) : null);
   const showMin = (r) => put(out, r.reduced_units == null
     ? h("div", { class: "notice warn", text: `Nothing to reduce: ${r.status} - ${r.stop_reason}` })
     : [h("div", { class: "notice " + (r.fresh_process_verification === "VERIFIED" ? "ok" : "bad") }, h("strong", { text: `${r.original_units} → ${r.reduced_units} operations` }),
@@ -707,6 +815,7 @@ async function viewAdvanced() {
   if (!live()) return;
   put(main, h("h1", { text: "Advanced: experiments" }),
     h("p", {}, h("a", { href: "#/campaign", text: "Mutation and metamorphic campaigns →" }), " - does the verifier itself catch defects?"),
+    h("p", {}, h("a", { href: "#/graph", text: "Dependency graph →" }), " - what depends on what, and what a change would invalidate."),
     h("p", {}, h("a", { href: "#/composition", text: "Composition analysis →" }), " - do valid parts make a valid whole (units, tags, generations)?"),
     h("div", { class: "notice", text: "Optional laboratory tools on three fictional systems. Defects are deliberately injected so you can see the laboratory catch them. None of this is needed for the Import → Export workflow." }),
     h("div", { class: "card" }, h("h2", { text: "Replay and checkpoint" }),
@@ -912,6 +1021,7 @@ async function render(soft) {
       case "advanced": await viewAdvanced(); break;
       case "campaign": await viewCampaign(); break;
       case "composition": await viewComposition(dec(route[1])); break;
+      case "graph": await viewGraph(); break;
       default: location.hash = "#/import";
     }
   } catch (e) {
