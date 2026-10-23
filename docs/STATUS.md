@@ -211,6 +211,11 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 * Source re-extraction controls now show an API rejection beside the retry button and re-enable it for another
   attempt. The installed-wheel browser journey injects a rejected retry and checks the visible error path.
 
+* Workbench failure states: the browser journey now breaks every API call (HTTP 500, then connection reset) and requires
+  import, review, run, findings and export to show a visible alert, and Advanced/Campaign to alert when the user runs
+  something, then recover once the API returns. This found that a failed screen had no heading; the router's fallback now
+  shows a heading, the error and a "Try again" button. Passed in the local Ubuntu container release gate; no remote CI run implied.
+
 ## CI host capability note
 
 GitHub's default hosted-job sandbox blocked Bubblewrap from creating its required nested user
