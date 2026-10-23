@@ -162,8 +162,9 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.goto(BASE + '#/import');
   await page.setInputFiles('#files', ['map.json', 'counters-g6.json', 'history.json'].map((f) => PUR + f));
   await page.click('button[type=submit]');
-  await page.waitForFunction(() => !/QUEUED|PARSING/.test(document.querySelector('main').innerText) && /counters-g6\.json/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
-  await page.waitForTimeout(1500);
+  await page.waitForFunction(() => ['map.json', 'counters-g6.json', 'history.json'].every((name) =>
+    [...document.querySelectorAll('main table tbody tr')].some((row) => row.innerText.includes(name) && row.innerText.includes('EXTRACTED'))),
+  null, { timeout: 60000 });
   await page.goto(BASE + '#/run');
   await page.waitForSelector('summary:has-text("Purpose")');
   for (const n of ['map.json', 'counters-g6.json', 'history.json']) await page.locator('li', { hasText: n }).locator('input').check();
@@ -183,8 +184,9 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.goto(BASE + '#/import');
   await page.setInputFiles('#files', ['units-mismatch.json', 'units-converted.json', 'scoped.json'].map((f) => COMP + f));
   await page.click('button[type=submit]');
-  await page.waitForFunction(() => !/QUEUED|PARSING/.test(document.querySelector('main').innerText) && /scoped\.json/.test(document.querySelector('main').innerText), null, { timeout: 30000 });
-  await page.waitForTimeout(1500);
+  await page.waitForFunction(() => ['units-mismatch.json', 'units-converted.json', 'scoped.json'].every((name) =>
+    [...document.querySelectorAll('main table tbody tr')].some((row) => row.innerText.includes(name) && row.innerText.includes('EXTRACTED'))),
+  null, { timeout: 60000 });
   await page.goto(BASE + '#/composition');
   await page.waitForSelector('#c-src');
   await page.selectOption('#c-src', { label: 'units-mismatch.json' });
