@@ -232,6 +232,13 @@ from one evidence document (conflicting copies go to human review); producer tag
   what was not evaluated. Limits: no built-in profile uses it; profiles with conditions are not comparable by `strengthens()`; a human cannot override a FALSE
   condition (change the context and rerun). Passed in the local Ubuntu container suite (408 tests) and release gate; no remote CI run implied.
 
+* Replay and dependency views: every checkpoint/laboratory result now shows a replay timeline (one bar per path on the operation axis, the
+  checkpoint boundary, the first divergence marked with a glyph, plus an equivalent table). A new Advanced page, `#/graph` (`GET /api/v1/graph`), draws
+  sources -> claim revisions -> runs with replacement links and stored run staleness; choosing an item highlights everything downstream and lists it.
+  Both carry text alternatives and were audited with axe-core (now eleven audited screens). Limits: the graph shows the newest 200 of each kind,
+  staleness is the stored freshness check (no re-evaluation), and the timeline reflects what the experiment reports (paths stop at their first divergence).
+  Local Ubuntu container suite (412 tests) and release gate passed; no remote CI run implied; no screen-reader review.
+
 ## CI host capability note
 
 GitHub's default hosted-job sandbox blocked Bubblewrap from creating its required nested user
@@ -278,6 +285,6 @@ Campaigns, replay and reduction are implemented as described above, with their s
    byte-identical packages except observation metadata; staleness tests).
 5. Jurisdiction review — **not started**.
 6. Accessibility, recovery, clean-machine install, license review — **partial**: keyboard path, skip link, focus handling,
-   `aria-live` status and non-colour verdict labels are in place and smoke-tested; **no screen-reader audit was run**; automated WCAG A/AA checks cover nine populated screens; repeatable installed-wheel acceptance and build comparison are available for Linux/Python 3.12;
+   `aria-live` status and non-colour verdict labels are in place and smoke-tested; **no screen-reader audit was run**; automated WCAG A/AA checks cover eleven populated screens; repeatable installed-wheel acceptance and build comparison are available for Linux/Python 3.12;
    a dependency metadata inventory exists, but **full dependency/provenance/license review remains open**.
 7. Owner review before publication — **pending**.

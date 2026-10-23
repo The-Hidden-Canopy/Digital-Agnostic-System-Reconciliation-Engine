@@ -16,7 +16,7 @@ and advanced breadth to follow a usable generic release.
 | Campaigns and independent reports (09–10) | Fixed mutation/metamorphic manifests, defective controls, independent totals/witness checking, external verifier adapter | Broader mutation/rule coverage and independently implemented language/runtime checker |
 | Generic risk packs (11) | Strict data-only grammar, three-valued applicability, dependency/version checks, UI obligations and proposed remediation | Catalog breadth; reviewed jurisdiction source mappings |
 | Packaging and release evidence (12, chapter 13 K) | `tools/check_release.py`: hashed Python build/parser inputs, two matching clean wheel builds, exact content allowlist, isolated offline installs, four-format CLI and optional installed-wheel Chromium journey; privileged Linux/Python 3.12 CI passed on 2026-10-23 | Broader platform matrix; full provenance/license review and owner release review |
-| Workbench (16) | Shared backend, default five-step workflow, job cancellation/recovery, findings/spans, advanced composition/purpose/campaign pages, four-format browser journey | Screen-reader accessibility audit; broader failure-state/browser coverage; advanced graph/replay visualizations |
+| Workbench (16) | Shared backend, default five-step workflow, job cancellation/recovery, findings/spans, advanced composition/purpose/campaign pages, four-format browser journey | Screen-reader accessibility audit; broader browser coverage beyond the API-failure journey |
 | Jurisdiction packs (14–15) | Design/source baselines only; no shipped jurisdiction pack | Official-source review, date/applicability rules, explicit incomplete coverage and qualified human review before shipping |
 
 ## Continuation delivered
