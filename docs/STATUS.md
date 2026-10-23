@@ -196,6 +196,8 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   (same 104 failures/18 errors with and without this change). The Linux/Bubblewrap suite has not been run for this increment.
 * CLI: a missing, unreadable or non-JSON input file (`validate`, `pack`, `campaign verify`, `--context-file`) now
   gives a one-line error and exit code 4 instead of a traceback (`CliInputFailures`).
+* Experiment endpoints validate defect lists, boundaries, crash `max_positions` and minimizer budgets as 422 client errors
+  (previously a mistyped crash/defect parameter returned 500).
 
 ## CI host capability note
 

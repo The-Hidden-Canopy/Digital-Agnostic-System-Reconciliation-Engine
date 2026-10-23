@@ -1019,9 +1019,12 @@ class Service:
             raise ServiceError(422, "bad_seed")
         if not isinstance(ops, int) or isinstance(ops, bool) or not 0 <= ops <= 400:
             raise ServiceError(422, "bad_ops", "ops must be an integer between 0 and 400")
-        bad = [d for d in (defects or []) if d not in DEFECTS]
+        defects = _name_list(defects, "defects")
+        bad = [d for d in defects if d not in DEFECTS]
         if bad:
             raise ServiceError(422, "unknown_defect", f"{bad}; known: {list(DEFECTS)}")
+        if boundary is not None and (not isinstance(boundary, int) or isinstance(boundary, bool) or not 0 <= boundary <= ops):
+            raise ServiceError(422, "bad_boundary", "boundary must be an integer between 0 and ops")
         b = ops // 2 if boundary is None else boundary
         return ExperimentCase(seed, tuple(generate_history(seed, ops)), b, tuple(defects or []))
 
@@ -1032,9 +1035,12 @@ class Service:
 
     def experiment_crash(self, writer_defect=None, recovery_defects=None, max_positions=None) -> dict:
         from .experiments import crash
-        if writer_defect not in (None, *crash.WRITER_DEFECTS) or any(d not in crash.RECOVERY_DEFECTS for d in (recovery_defects or [])):
+        recovery_defects = _name_list(recovery_defects, "recovery_defects")
+        if writer_defect not in (None, *crash.WRITER_DEFECTS) or any(d not in crash.RECOVERY_DEFECTS for d in recovery_defects):
             raise ServiceError(422, "unknown_defect")
-        return crash.crash_experiment(writer_defect, tuple(recovery_defects or ()), max_positions).to_dict()
+        if max_positions is not None and (not isinstance(max_positions, int) or isinstance(max_positions, bool) or max_positions < 0):
+            raise ServiceError(422, "bad_max_positions", "max_positions must be a non-negative integer")
+        return crash.crash_experiment(writer_defect, tuple(recovery_defects), max_positions).to_dict()
 
     def experiment_minimize(self, seed="seed-1", ops=120, boundary=None, defects=None, max_oracle_calls=3000) -> dict:
         import tempfile
@@ -1042,11 +1048,13 @@ class Service:
         from .minimize import ReductionBudget, minimize
         from .reducers.sequence import DeleteTransactionMembers, DeleteUnits
         from .reducers.values import SimplifyValues
+        if not isinstance(max_oracle_calls, int) or isinstance(max_oracle_calls, bool) or max_oracle_calls < 1:
+            raise ServiceError(422, "bad_budget", "max_oracle_calls must be a positive integer")
         if not defects:
             raise ServiceError(422, "defect_required", "inject at least one named defect to have a failure to reduce")
         case = self._case(seed, ops, boundary, defects)
         reducers = [DeleteUnits(), DeleteTransactionMembers(), SimplifyValues()]
-        result = minimize(case, CheckpointOracle(), reducers, ReductionBudget(max_oracle_calls=min(int(max_oracle_calls), 3000)))
+        result = minimize(case, CheckpointOracle(), reducers, ReductionBudget(max_oracle_calls=min(max_oracle_calls, 3000)))
         if result.status in ("NOT_REPRODUCED", "UNSTABLE"):
             return {"status": result.status, "stop_reason": result.stop_reason, "original_units": len(case.ops)}
         pkg = build_package(result, reducers)
@@ -1146,3 +1154,11 @@ def _pred_facts(p) -> list[str]:
     if p["op"] in ("eq", "in", "exists"):
         return [p["fact"]]
     return [f for a in (p.get("args") or [p["arg"]] if "arg" in p else p["args"]) for f in _pred_facts(a)]
+
+
+def _name_list(value, field: str) -> list:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)) or not all(isinstance(v, str) for v in value):
+        raise ServiceError(422, "bad_" + field, f"{field} must be a list of names")
+    return list(value)

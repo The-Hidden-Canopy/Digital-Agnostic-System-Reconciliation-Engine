@@ -167,6 +167,19 @@ class FailureStates(ServerCase):
         self.assertNotIn("%", body["source"]["name"])  # undecodable bytes never survive as an escape
         self.assertEqual(self.call("GET", "/api/v1/%00")[0], 404)
 
+    def test_experiment_parameters_are_validated_not_crashed_on(self):
+        cases = [("crash", {"max_positions": "a"}), ("crash", {"max_positions": -1}), ("crash", {"recovery_defects": 5}),
+                 ("crash", {"recovery_defects": [1]}), ("crash", {"writer_defect": ["x"]}),
+                 ("checkpoint", {"defects": 5}), ("checkpoint", {"defects": [None]}), ("checkpoint", {"boundary": "x"}),
+                 ("checkpoint", {"boundary": 9999}), ("checkpoint", {"boundary": -1}), ("checkpoint", {"boundary": True}),
+                 ("minimize", {"defects": ["omit_random_cursor"], "max_oracle_calls": "x"}),
+                 ("minimize", {"defects": ["omit_random_cursor"], "max_oracle_calls": 0}),
+                 ("minimize", {"defects": 5})]
+        for kind, body in cases:
+            s, resp, _ = self.call("POST", f"/api/v1/experiments/{kind}", body)
+            self.assertEqual(s, 422, (kind, body, resp))
+            self.assertIn("error", resp)
+
     def test_decisions_require_known_action_and_precondition(self):
         s, body, _ = self.call("POST", "/api/v1/candidates/nope/decisions", {"action": "REJECT", "reason": "x"})
         self.assertEqual(s, 404, body)
