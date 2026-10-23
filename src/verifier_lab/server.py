@@ -257,10 +257,10 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._json_body()
                 lists = {k: _string_list(body, k) for k in
                          ("claim_revision_ids", "evidence_source_ids", "pack_ids")}
-                purposes = body.get("purposes", [])
+                purposes = body["purposes"] if "purposes" in body else []
                 if not isinstance(purposes, list) or not all(isinstance(p, dict) for p in purposes):
                     raise ServiceError(422, "bad_run_request", "purposes must be a list of objects")
-                context = body.get("context") or {}
+                context = body["context"] if "context" in body else {}
                 if not isinstance(context, dict):
                     raise ServiceError(422, "bad_run_request", "context must be an object")
                 res = svc.start_run(lists["claim_revision_ids"], lists["evidence_source_ids"],
@@ -284,7 +284,7 @@ def _int_param(qs: dict, name: str, default: int, minimum: int) -> int:
 
 
 def _string_list(body: dict, name: str) -> list[str]:
-    value = body.get(name) or []
+    value = body[name] if name in body else []
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ServiceError(422, "bad_run_request", f"{name} must be a list of strings")
     return value

@@ -155,7 +155,9 @@ class FailureStates(ServerCase):
     def test_wrong_json_shapes_are_client_errors(self):
         self.assertClientError(self.call("POST", "/api/v1/runs", b"[]", headers={"Content-Type": "application/json"}), 400, "object_required")
         for body in ({"claim_revision_ids": "x"}, {"claim_revision_ids": [1]}, {"evidence_source_ids": {"a": 1}},
-                     {"context": []}, {"pack_ids": 3}, {"purposes": "p"}, {"purposes": ["p"]}):
+                     {"context": []}, {"context": None}, {"pack_ids": 3}, {"pack_ids": False},
+                     {"purposes": "p"}, {"purposes": ["p"]}, {"purposes": None},
+                     {"claim_revision_ids": None}, {"evidence_source_ids": False}):
             s, resp, _ = self.call("POST", "/api/v1/runs", body)
             self.assertIn(s, (400, 404, 422), (body, resp))
             self.assertIn("error", resp)
@@ -190,6 +192,12 @@ class FailureStates(ServerCase):
         self.assertEqual(s, 404, body)
         s, body, _ = self.call("POST", "/api/v1/candidates/nope/decisions", {"action": 5})
         self.assertIn(s, (400, 404, 422), body)
+
+    def test_malformed_decision_values_are_client_errors(self):
+        for body, code in (({"action": ["REJECT"]}, "bad_action"),
+                           ({"action": "REJECT", "reason": ["explanation"]}, "bad_reason"),
+                           ({"action": "REJECT", "reason": 12}, "bad_reason")):
+            self.assertClientError(self.call("POST", "/api/v1/candidates/nope/decisions", body), 422, code)
 
 
 class HttpWorkflow(ServerCase):

@@ -201,6 +201,9 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 * The run endpoint accepts the workbench's purpose request objects and rejects scalar entries. A regression
   in the initial failure-state validator caused the purpose browser journey to stall; the hosted release gate
   exposed it, and the corrected request shape has a focused HTTP test.
+* Explicit false or null run lists, purposes and context are now rejected as malformed requests instead of
+  being interpreted as omitted values. Decision actions and reasons have type checks, so non-string values
+  produce 422 client errors before decision processing.
 
 ## CI host capability note
 

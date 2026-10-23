@@ -529,8 +529,12 @@ class Service:
     # ----------------------------------------------------------------- decisions
     def decide(self, candidate_id: str, action: str, if_match: str | None, *, edit: dict | None = None,
                reason: str | None = None, idempotency_key: str | None = None) -> dict:
+        if not isinstance(action, str):
+            raise ServiceError(422, "bad_action", "action must be a string")
         if action not in ACTIONS:
             raise ServiceError(422, "bad_action", action)
+        if reason is not None and not isinstance(reason, str):
+            raise ServiceError(422, "bad_reason", "reason must be a string")
         payload = {"action": action, "edit": edit, "reason": reason, "if_match": if_match}
         scope = "decide:" + candidate_id
         prior = self._idem(scope, idempotency_key, payload)
