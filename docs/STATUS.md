@@ -208,6 +208,8 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   formats where dialect choice has no meaning.
 * The installed-wheel browser journey waits for each imported fixture to reach `EXTRACTED` before using it.
   This replaces timing sleeps and partial filename checks that intermittently raced the import refresh.
+* Source re-extraction controls now show an API rejection beside the retry button and re-enable it for another
+  attempt. The installed-wheel browser journey injects a rejected retry and checks the visible error path.
 
 ## CI host capability note
 

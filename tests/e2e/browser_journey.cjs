@@ -34,6 +34,15 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await waitForImports(['product-spec.md', 'service-config.json', 'schema.sql']);
   await page.waitForFunction(() => /PARTIALLY_PARSED/.test(document.querySelector('main').innerText));  // markdown HTML comment stays visible as unsupported
   await audit(page, 'import');
+  await page.locator('a', { hasText: 'schema.sql' }).click();
+  const retryRoute = '**/api/v1/sources/*/reextract';
+  await page.route(retryRoute, (route) => route.fulfill({ status: 422, contentType: 'application/json',
+    body: JSON.stringify({ error: { code: 'retry_rejected', message: 'Retry unavailable for this test' } }) }));
+  await page.click('button:has-text("Re-extract with this dialect")');
+  await page.waitForSelector('text=Retry unavailable for this test');
+  assert.strictEqual(problems.length, 0);
+  await page.unroute(retryRoute);
+  await page.goto(BASE + '#/import');
   if (process.env.AXE_MODULE) {
     await page.evaluate(() => { const control = document.createElement('button'); control.id = 'axe-negative-control'; document.body.append(control); });
     await assert.rejects(() => audit(page, 'negative-control'), /button-name/);

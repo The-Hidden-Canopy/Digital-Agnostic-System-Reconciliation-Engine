@@ -175,15 +175,27 @@ async function sourceDetail(id) {
     const sqlSource = s.format === "sql";
     const latest = s.latest_attempt || s.attempt;
     const reext = h("div", { class: "row" });
+    const reextStatus = h("div", { role: "status" });
+    const retry = async (button, body) => {
+      button.disabled = true;
+      put(reextStatus);
+      try {
+        await api("POST", "sources/" + enc(id) + "/reextract", { body });
+        pollJobs(true);
+        announce("Re-extraction queued; previous extraction stays in history.");
+      } catch (err) {
+        put(reextStatus, errorBox(err));
+      } finally {
+        button.disabled = false;
+      }
+    };
     if (sqlSource) {
       const d = h("select", { "aria-label": "Dialect for re-extraction" }, ["generic", "postgresql", "mysql", "sqlite", "unresolved"].map((x) => h("option", { value: x, text: x, selected: x === (latest && latest.dialect) })));
-      reext.append(d, h("button", { text: latest && latest.state === "FAILED" ? "Retry extraction" : "Re-extract with this dialect", onclick: async () => {
-        await api("POST", "sources/" + enc(id) + "/reextract", { body: { dialect: d.value } }); pollJobs(true);
-        announce("Re-extraction queued; previous extraction stays in history."); } }));
+      const button = h("button", { text: latest && latest.state === "FAILED" ? "Retry extraction" : "Re-extract with this dialect", onclick: () => retry(button, { dialect: d.value }) });
+      reext.append(d, button);
     } else {
-      reext.append(h("button", { text: latest && latest.state === "FAILED" ? "Retry extraction" : "Re-extract", onclick: async () => {
-        await api("POST", "sources/" + enc(id) + "/reextract", { body: {} }); pollJobs(true);
-        announce("Re-extraction queued; previous extraction stays in history."); } }));
+      const button = h("button", { text: latest && latest.state === "FAILED" ? "Retry extraction" : "Re-extract", onclick: () => retry(button, {}) });
+      reext.append(button);
     }
     put(box, h("div", { class: "card" },
       h("h2", { id: "src-h", tabIndex: -1, text: "Source: " + s.name }),
@@ -191,7 +203,7 @@ async function sourceDetail(id) {
         h("dt", { text: "Format" }), h("dd", { text: s.format }),
         h("dt", { text: "Extraction" }), h("dd", { text: latest ? `${latest.state} - coverage ${latest.coverage || "n/a"} - ${s.fact_count ?? 0} facts` : "none" }),
         s.manifest ? [h("dt", { text: "Parser" }), h("dd", { text: `${s.manifest.parser} ${s.manifest.parser_version} (adapter v${s.manifest.adapter_version})` })] : null),
-      latest && latest.error ? h("div", { class: "notice bad", text: "Extraction failed: " + latest.error.code }) : null, reext,
+      latest && latest.error ? h("div", { class: "notice bad", text: "Extraction failed: " + latest.error.code }) : null, reext, reextStatus,
       h("h3", { text: "Coverage by region" }),
       h("p", { class: "muted", text: "Syntax coverage and claim interpretation are separate: a region can be parsed yet yield no claim." }),
       h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Kind", "Bytes", "Status", "Interpretation", "Reasons"].map((x) => h("th", { text: x })))),
