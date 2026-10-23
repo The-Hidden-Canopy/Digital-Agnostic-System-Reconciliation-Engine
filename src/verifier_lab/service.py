@@ -976,22 +976,22 @@ class Service:
             out = {}
             for f in run["findings"]:
                 analysis = (f.get("witness") or {}).get("analysis") or {}
-                if analysis.get("evaluation_key"):
-                    out[f["claim_id"]] = f
+                if analysis.get("evaluation_key") and f.get("claim"):
+                    out[f["claim"]["claim_revision_id"]] = f
             return out
         before, after = keyed(old), keyed(new)
         rows = []
-        for claim_id, f in sorted(after.items()):
+        for revision_id, f in sorted(after.items()):
             key = f["witness"]["analysis"]["evaluation_key"]
-            prev = before.get(claim_id)
+            prev = before.get(revision_id)
             if prev is None:
                 status = "NOT_IN_EARLIER_RUN"
             elif prev["witness"]["analysis"]["evaluation_key"] != key or prev["rule_version"] != f["rule_version"]:
                 status = "MUST_REEVALUATE"
             else:
                 status = "UNCHANGED"
-            rows.append({"claim_id": claim_id, "subject": (f.get("claim") or {}).get("subject"),
-                         "target": ((f.get("claim") or {}).get("arguments") or {}).get("target"), "status": status,
+            rows.append({"claim_revision_id": revision_id, "subject": f["claim"]["subject"],
+                         "target": f["witness"]["analysis"]["scope"]["target"], "status": status,
                          "verdict": f["verdict"], "earlier_verdict": prev["verdict"] if prev else None,
                          "evaluation_key": key})
         return {"run": new_run_id, "against": old_run_id, "items": rows,
