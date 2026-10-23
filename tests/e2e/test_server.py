@@ -112,6 +112,68 @@ class Security(ServerCase):
         self.assertEqual(self.call("GET", "/static/../server.py")[0], 404)
 
 
+class FailureStates(ServerCase):
+    """Malformed requests are client errors with a stable code, never a 500."""
+
+    def assertClientError(self, response, status, code=None):
+        s, body, _ = response
+        self.assertEqual(s, status, body)
+        self.assertEqual(set(body), {"error"})
+        if code:
+            self.assertEqual(body["error"]["code"], code)
+
+    def test_non_numeric_and_negative_paging_parameters(self):
+        for q in ("limit=abc", "offset=abc", "limit=-1", "offset=-5", "limit=1.5", "limit=", "limit=0"):
+            self.assertClientError(self.call("GET", f"/api/v1/candidates?{q}"), 422, "bad_query")
+        self.assertEqual(self.call("GET", "/api/v1/candidates?limit=100000")[0], 200)
+
+    def test_event_cursor_must_be_a_non_negative_integer(self):
+        for q in ("after=abc", "after=-1", "after="):
+            self.assertClientError(self.call("GET", f"/api/v1/jobs/nope/events?{q}"), 422, "bad_query")
+
+    def test_unknown_identifiers_are_not_found(self):
+        for path in ("/api/v1/sources/nope", "/api/v1/sources/nope/text", "/api/v1/candidates/nope",
+                     "/api/v1/runs/nope", "/api/v1/runs/nope/export", "/api/v1/jobs/nope",
+                     "/api/v1/jobs/nope/events"):
+            s, body, _ = self.call("GET", path)
+            self.assertEqual(s, 404, (path, body))
+            self.assertIn("error", body)
+        for path in ("/api/v1/runs/nope/verify", "/api/v1/jobs/nope/cancel", "/api/v1/sources/nope/reextract"):
+            s, body, _ = self.call("POST", path, {})
+            self.assertEqual(s, 404, (path, body))
+
+    def test_malformed_request_framing(self):
+        self.assertClientError(self.call("POST", "/api/v1/sources", b"x", headers={"Content-Length": "-1"}), 411, "length_required")
+        c = self.conn()
+        c.putrequest("POST", "/api/v1/runs")
+        c.putheader("X-Session-Token", self.wb.token)
+        c.putheader("Content-Type", "application/json")
+        c.endheaders()
+        self.assertEqual(c.getresponse().status, 411)
+        c.close()
+
+    def test_wrong_json_shapes_are_client_errors(self):
+        self.assertClientError(self.call("POST", "/api/v1/runs", b"[]", headers={"Content-Type": "application/json"}), 400, "object_required")
+        for body in ({"claim_revision_ids": "x"}, {"claim_revision_ids": [1]}, {"evidence_source_ids": {"a": 1}},
+                     {"context": []}, {"pack_ids": 3}, {"purposes": "p"}):
+            s, resp, _ = self.call("POST", "/api/v1/runs", body)
+            self.assertIn(s, (400, 404, 422), (body, resp))
+            self.assertIn("error", resp)
+
+    def test_unusable_utf8_and_percent_encoding(self):
+        self.assertEqual(self.call("GET", "/api/v1/sources/%ff%fe")[0], 404)
+        s, body, _ = self.call("POST", "/api/v1/sources", b"data", headers={"X-Filename": "%ff.md"})
+        self.assertEqual(s, 202, body)
+        self.assertNotIn("%", body["source"]["name"])  # undecodable bytes never survive as an escape
+        self.assertEqual(self.call("GET", "/api/v1/%00")[0], 404)
+
+    def test_decisions_require_known_action_and_precondition(self):
+        s, body, _ = self.call("POST", "/api/v1/candidates/nope/decisions", {"action": "REJECT", "reason": "x"})
+        self.assertEqual(s, 404, body)
+        s, body, _ = self.call("POST", "/api/v1/candidates/nope/decisions", {"action": 5})
+        self.assertIn(s, (400, 404, 422), body)
+
+
 class HttpWorkflow(ServerCase):
     def test_import_review_run_export_over_http_with_keepalive(self):
         c = self.conn()                               # one persistent connection: framing must survive unread bodies

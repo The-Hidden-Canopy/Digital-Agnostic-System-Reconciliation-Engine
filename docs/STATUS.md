@@ -187,6 +187,14 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
   enabled. The recovered Windows workspace remains explicit portable-development evidence only;
   it is not a local security-validation claim.
 
+## Added in increment fifteen (HTTP failure states)
+
+* Non-numeric, negative or blank `limit`/`offset`/`after` query values and mistyped run-request lists/context
+  previously produced HTTP 500; they are now 422 client errors (`bad_query`, `bad_run_request`).
+* `FailureStates` tests cover unknown ids, bad framing, wrong JSON shapes and undecodable names. Seven new tests
+  passed on the recovered Windows workspace; the rest of the suite there still fails closed in required parser mode
+  (same 104 failures/18 errors with and without this change). The Linux/Bubblewrap suite has not been run for this increment.
+
 ## CI host capability note
 
 GitHub's default hosted-job sandbox blocked Bubblewrap from creating its required nested user

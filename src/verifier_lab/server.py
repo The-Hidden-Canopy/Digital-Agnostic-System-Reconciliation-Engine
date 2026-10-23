@@ -133,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":  # always drain the body so keep-alive framing stays intact
                 self._body(self.server.service.admission.max_bytes + 1)
             url = urlparse(self.path)
-            path, qs = url.path, {k: v[0] for k, v in parse_qs(url.query).items()}
+            path, qs = url.path, {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
             if path == "/" and method == "GET":
                 html = _web("index.html").replace(b"__TOKEN__", self.server.token.encode())
                 return self._send(200, html, "text/html; charset=utf-8")
@@ -171,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["candidates"]:
                 return self._json(200, svc.list_candidates(
                     source_id=qs.get("source_id"), status=qs.get("status"), query=qs.get("q"),
-                    limit=min(int(qs.get("limit", 100)), 500), offset=int(qs.get("offset", 0))))
+                    limit=min(_int_param(qs, "limit", 100, 1), 500), offset=_int_param(qs, "offset", 0, 0)))
             if len(parts) == 2 and parts[0] == "candidates":
                 cand = svc.get_candidate(parts[1])
                 return self._json(200, cand, {"ETag": cand["etag"]})
@@ -198,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[0] == "jobs":
                 return self._json(200, svc.get_job(parts[1]))
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "events":
-                return self._json(200, svc.job_events(parts[1], int(qs.get("after", 0))))
+                return self._json(200, svc.job_events(parts[1], _int_param(qs, "after", 0, 0)))
         else:
             if parts == ["candidates"]:
                 body = self._json_body()
@@ -255,9 +255,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(201, svc.install_pack(self._raw))
             if parts == ["runs"]:
                 body = self._json_body()
-                res = svc.start_run(body.get("claim_revision_ids") or [], body.get("evidence_source_ids") or [],
-                                    h.get("Idempotency-Key"), body.get("pack_ids") or [], body.get("context") or {},
-                                    body.get("purposes") or [])
+                lists = {k: _string_list(body, k) for k in
+                         ("claim_revision_ids", "evidence_source_ids", "pack_ids", "purposes")}
+                context = body.get("context") or {}
+                if not isinstance(context, dict):
+                    raise ServiceError(422, "bad_run_request", "context must be an object")
+                res = svc.start_run(lists["claim_revision_ids"], lists["evidence_source_ids"],
+                                    h.get("Idempotency-Key"), lists["pack_ids"], context, lists["purposes"])
                 return self._json(202, res)
             if len(parts) == 3 and parts[0] == "runs" and parts[2] == "verify":
                 path = svc.export_run(parts[1])
@@ -265,6 +269,22 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cancel":
                 return self._json(200, svc.cancel_job(parts[1]))
         self._json(404, {"error": {"code": "not_found"}})
+
+
+def _int_param(qs: dict, name: str, default: int, minimum: int) -> int:
+    if name not in qs:
+        return default
+    raw = qs[name]
+    if not (raw.isascii() and raw.isdigit()) or int(raw) < minimum:
+        raise ServiceError(422, "bad_query", f"{name} must be an integer >= {minimum}")
+    return int(raw)
+
+
+def _string_list(body: dict, name: str) -> list[str]:
+    value = body.get(name) or []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ServiceError(422, "bad_run_request", f"{name} must be a list of strings")
+    return value
 
 
 def serve(workspace: Path, host: str = "127.0.0.1", port: int = 8765) -> Workbench:
