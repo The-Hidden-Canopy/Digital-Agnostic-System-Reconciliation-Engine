@@ -42,14 +42,14 @@ jobs:
         run: |
           PLAYWRIGHT_MODULE="$RUNNER_TEMP/dasre-ui/node_modules/playwright" \
           AXE_MODULE="$RUNNER_TEMP/dasre-ui/node_modules/axe-core" \
-          python tools/check_release.py --output "$RUNNER_TEMP/dasre-release" --browser --accessibility
+          python tools/check_release.py --output /tmp/dasre-release --browser --accessibility
       - name: Retain build artifacts and evidence (including failed check logs)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: linux-python312-release-evidence
           path: |
-            ${{ runner.temp }}/dasre-release/evidence.json
-            ${{ runner.temp }}/dasre-release/accessibility.json
-            ${{ runner.temp }}/dasre-release/logs/
-            ${{ runner.temp }}/dasre-release/dist-1/
+            /tmp/dasre-release/evidence.json
+            /tmp/dasre-release/accessibility.json
+            /tmp/dasre-release/logs/
+            /tmp/dasre-release/dist-1/
