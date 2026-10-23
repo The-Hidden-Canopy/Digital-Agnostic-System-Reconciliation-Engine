@@ -910,7 +910,10 @@ async function render(soft) {
       case "composition": await viewComposition(dec(route[1])); break;
       default: location.hash = "#/import";
     }
-  } catch (e) { put(main, errorBox(e)); }
+  } catch (e) {
+    put(main, h("h1", { text: "This screen could not be loaded" }), errorBox(e),
+      h("p", {}, h("button", { type: "button", text: "Try again", onclick: () => render(false) })));
+  }
   if (!soft) { document.title = "Verification Workbench"; if (!document.activeElement || document.activeElement === document.body) main.focus({ preventScroll: true }); }
 }
 window.addEventListener("hashchange", () => render(false));
