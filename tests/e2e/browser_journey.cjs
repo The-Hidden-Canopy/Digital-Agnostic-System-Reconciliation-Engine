@@ -327,6 +327,31 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   await page.waitForSelector('h1');
   assert.strictEqual(await page.evaluate(() => location.hash), link);
 
+  // 8. failure states: every screen reports a broken API to the user, and recovers when it returns
+  const fp = await browser.newPage();   // separate page: browser-logged failed requests are expected here, not product problems
+  fp.on('pageerror', (e) => problems.push('pageerror (failure state): ' + e.message));
+  await fp.goto(BASE + '#/import');
+  await fp.waitForSelector('h1');
+  for (const mode of ['http-500', 'network-abort']) {
+    await fp.route('**/api/v1/**', (route) => mode === 'http-500'
+      ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal_error', message: 'simulated failure' } }) })
+      : route.abort('connectionreset'));
+    for (const screen of ['import', 'review', 'run', 'findings', 'export', 'advanced', 'campaign']) {
+      await fp.goto(BASE + '#/' + screen);
+      await fp.reload();
+      await fp.waitForFunction(() => document.querySelector('main [role=alert]') || document.querySelector('main .notice.bad'),
+        null, { timeout: 15000 }).catch(() => { throw new Error(`${mode}: #/${screen} showed no visible failure`); });
+      assert.ok(await fp.evaluate(() => document.querySelector('main h1') !== null), `${mode}: #/${screen} lost its heading`);
+    }
+    await fp.unroute('**/api/v1/**');
+    await fp.goto(BASE + '#/import');
+    await fp.reload();
+    await fp.waitForFunction(() => /EXTRACTED/.test(document.querySelector('main').innerText), null, { timeout: 15000 });
+    assert.strictEqual(await fp.evaluate(() => document.querySelectorAll('main [role=alert]').length), 0, `${mode}: error stayed after recovery`);
+  }
+  await fp.close();
+  console.log('failure states: OK');
+
   assert.deepStrictEqual(problems, [], problems.join('\n'));
   console.log('browser journey: OK');
   await browser.close();
