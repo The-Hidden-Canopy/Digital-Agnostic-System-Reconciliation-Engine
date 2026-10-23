@@ -448,7 +448,9 @@ async function viewRun(runId) {
         return h("div", {}, h("label", { for: inp.id, text: `${r.role}${r.optional ? " (optional)" : ""} - ${r.value_kind}, ${r.min}..${r.max === null ? "any" : r.max}` }), r.description ? h("div", { class: "muted", text: r.description }) : null, inp); });
       const box = h("div", { hidden: true, style: "margin:.4rem 0 .8rem 1.4rem" }, inputs,
         pr.coherence.length ? h("p", { class: "muted", text: "Coherence: " + pr.coherence.map((c) => `sources must agree on ${c.fact}`).join("; ") }) : null,
-        pr.lifecycle ? h("p", { class: "muted", text: `Lifecycle: needs recorded history events up to '${pr.lifecycle.target}' (a boolean saying so is not a record)` }) : null);
+        pr.lifecycle ? h("p", { class: "muted", text: `Lifecycle: needs recorded history events up to '${pr.lifecycle.target}' (a boolean saying so is not a record)` }) : null,
+        pr.applies_when ? h("p", { class: "notice" }, `This purpose applies only under stated conditions. It looks at the context fact(s): ${pr.applicability_facts.join(", ")}. A fact you leave out is unknown, never false, so the result cannot be a clean pass. `,
+          h("button", { type: "button", text: "Open the context facts box", onclick: () => { packPanel.open = true; ctxArea.focus(); } })) : null);
       const cb = h("input", { type: "checkbox", id: "pu-" + pr.profile_id, onchange: () => { box.hidden = !cb.checked; upd(); } });
       purposeBoxes.set(pr.profile_id, cb);
       return h("div", {}, h("label", { class: "inline", for: cb.id }, cb, h("span", {}, h("strong", { text: pr.title }), ` v${pr.version}`)), h("div", { class: "muted", text: pr.description }), box);
@@ -579,7 +581,9 @@ function purposesCard(run) {
       p.newer_version ? h("div", { class: "notice warn" }, `A newer version (v${p.newer_version}) is installed. This report keeps the version it was produced with; `, h("a", { href: "#/run", text: "evaluate again with the newer one" }), ".") : null,
       h("div", { class: "tablewrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Obligation", "Verdict", "Reason", "What could resolve it"].map((t) => h("th", { text: t })))),
         h("tbody", {}, p.obligations.map((o) => h("tr", {}, h("td", {}, h("code", { text: o.id })), h("td", {}, verdictBadge(o.verdict)), h("td", { text: o.reason.replace(/_/g, " ") }),
-          h("td", {}, o.would_resolve || "-", o.witness && o.witness.values && o.verdict === "CONTRADICTED" ? h("div", { class: "mono muted", text: "saw: " + o.witness.values.map((v) => `${v.source}=${JSON.stringify(v.value.value)}`).join(" vs ") }) : null)))))),
+          h("td", {}, o.would_resolve || "-", o.kind === "applicability" && o.witness.facts ? h("div", { class: "mono muted", text: "context: " + (o.witness.facts.map((k) => `${k}=${k in o.witness.values ? JSON.stringify(o.witness.values[k]) : "unstated"}`).join(", ") || "none") }) : null,
+            o.witness && o.witness.values && o.verdict === "CONTRADICTED" ? h("div", { class: "mono muted", text: "saw: " + o.witness.values.map((v) => `${v.source}=${JSON.stringify(v.value.value)}`).join(" vs ") }) : null)))))),
+      p.not_evaluated && p.not_evaluated.length ? h("p", { class: "notice", text: "Not evaluated because the purpose does not apply: " + p.not_evaluated.join(", ") }) : null,
       h("p", { class: "muted", text: p.scope.statement + " Evaluated: " + (p.scope.evaluated_sources.join(", ") || "none") + (p.scope.sources_outside_evaluation_scope.length ? ". Outside this purpose's scope: " + p.scope.sources_outside_evaluation_scope.join(", ") : "") }),
       h("details", {}, h("summary", { text: "Pinned profile and bindings" }), h("pre", { class: "src", text: JSON.stringify({ profile: p.profile, bindings: p.bindings }, null, 2) })))));
 }

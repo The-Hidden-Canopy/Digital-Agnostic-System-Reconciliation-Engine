@@ -650,7 +650,9 @@ class Service:
                  "description": p.body.get("description", ""),
                  "roles": [{"role": r["role"], "description": r.get("description", ""), "min": r.get("min", 1), "max": r.get("max", 1),
                             "value_kind": r.get("value_kind", "any"), "optional": bool(r.get("optional"))} for r in p.roles],
-                 "coherence": p.body.get("coherence", []), "lifecycle": p.body.get("lifecycle")} for p in self.purposes.list()]
+                 "coherence": p.body.get("coherence", []), "lifecycle": p.body.get("lifecycle"),
+                 "applies_when": p.body.get("applies_when"),
+                 "applicability_facts": sorted(set(_pred_facts(p.body.get("applies_when"))))} for p in self.purposes.list()]
 
     def install_purpose(self, data: bytes) -> dict:
         try:

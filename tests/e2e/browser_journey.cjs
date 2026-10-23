@@ -191,6 +191,40 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
   assert.ok((await page.innerText('main')).includes('sources from different generations'));
   assert.ok((await page.innerText('main')).includes('g6'));
 
+  // 4e2. purpose applicability: the same evidence is "not applicable" in a lab, supported in production, and unresolved when the fact is missing
+  const canon = (v) => Array.isArray(v) ? '[' + v.map(canon).join(',') + ']' : v && typeof v === 'object'
+    ? '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}' : JSON.stringify(v);
+  const gated = { schema: 'verifier-lab/purpose/1', profile_id: 'inspect-in-production', version: '1.0.0', title: 'Inspect a checkpoint (production only)',
+    description: 'Applies only in production.', roles: [{ role: 'entries_count', min: 1, max: 1, value_kind: 'integer' }],
+    applies_when: { op: 'eq', fact: 'environment', value: 'production' } };
+  gated.content_digest = 'sha256:' + require('crypto').createHash('sha256').update(Buffer.from(canon(gated), 'utf8')).digest('hex');
+  const installed = await page.evaluate(async (body) => {
+    const r = await fetch('/api/v1/purposes', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Token': document.querySelector('meta[name="vl-token"]').content }, body });
+    return r.status;
+  }, JSON.stringify(gated));
+  assert.strictEqual(installed, 201);
+  for (const [context, expected] of [['environment = lab', 'Not applicable'], ['environment = production', 'Supported'], ['', 'Insufficient evidence']]) {
+    await page.goto(BASE + '#/run');
+    await page.waitForSelector('summary:has-text("Purpose")');
+    await page.locator('li', { hasText: 'map.json' }).locator('input').check();
+    await page.click('summary:has-text("Purpose (optional)")');
+    await page.locator('label', { hasText: 'Inspect a checkpoint (production only)' }).locator('input').check();
+    assert.ok((await page.innerText('main')).includes('applies only under stated conditions'));
+    await page.fill('#role-inspect-in-production-entries_count', 'checkpoint.entries_count');
+    await page.click('button:has-text("Open the context facts box")');
+    assert.strictEqual(await page.evaluate(() => document.activeElement.id), 'ctx');         // the button leads the user to the right box
+    await page.fill('#ctx', context);
+    await page.click('button:has-text("Start run")');
+    await page.waitForSelector('text=Open findings', { timeout: 60000 });
+    await page.click('text=Open findings >> nth=0');
+    await page.waitForSelector('text=Purpose assessments');
+    const card = page.locator('h3:has-text("inspect-in-production")');
+    assert.ok((await card.innerText()).includes(expected), `${context || 'no context'}: expected ${expected}`);
+    const text = await page.innerText('main');
+    if (expected === 'Not applicable') assert.ok(text.includes('Not evaluated because the purpose does not apply: role:entries_count') && text.includes('context: environment="lab"'));
+    if (expected === 'Insufficient evidence') assert.ok(text.includes('context: environment=unstated') && text.includes('never false'));
+  }
+
   // 4f. composition page: units mismatch is contradicted with the edge named; the converted version composes; targeting scopes it
   const COMP = path.resolve(__dirname, '../../fixtures/composition/') + '/';
   await page.goto(BASE + '#/import');
