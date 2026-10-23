@@ -103,7 +103,7 @@ and applicability conditions on profiles (a profile that is `NOT_APPLICABLE` to 
 
 Limits: the registered conversion table has five pairs; requirements are equality/membership only (no ranges or arithmetic); a pipeline is read
 from one evidence document (conflicting copies go to human review); producer tags are assertions, so a SUPPORTED result says so in `conditional_on`.
-The cache-key scheme for incremental re-evaluation (claim + transitive evidence + rule versions) is not implemented; impact analysis is.
+`composition.evaluation_key(pipeline, target, rule_version)` now derives a conservative key over a target's ancestors, the declarations they touch, same-generation groups, the conversion table and the rule version; equal keys imply equal obligations/verdict (property-tested on random edits; informational `not_evaluated` listings excluded). Nothing consumes the key yet: no result cache is wired into runs, so there is no behaviour change.
 
 ## Added in increment eight (adapters for campaigns, format documentation)
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
+from .canonical import record_id
 from .graph import find_cycle, invalidation_paths, stable_topological_order
 
 MAX_ACTIVITIES = 500
@@ -291,3 +292,44 @@ def impact(old: dict, new: dict) -> dict:
             "affected": {k: v for k, v in sorted(affected.items())},
             "unaffected": sorted(set(na) - set(affected)),
             "note": "Each affected activity carries a path from the change. Unaffected branches keep their earlier results."}
+
+
+KEY_VERSION = "1"
+
+
+def evaluation_key(p: dict, target: str, rule_version: str = "1") -> str:
+    """Cache key for one targeted evaluation: equal keys guarantee equal obligations and overall verdict.
+
+    The key covers exactly what analyze(p, target) can read for its verdict-bearing output: the target's
+    ancestor activities, the external declarations and producers of artifacts they touch, declarations that
+    make an artifact both produced and external, and every same_generation group with its members' declared
+    generations. Edits to unrelated branches do not change it. It is deliberately conservative: it may change
+    when nothing relevant did, but must never stay equal when the verdict could differ. The `scope.not_evaluated`
+    listing is informational and not covered. `rule_version` and the conversion table are part of the key.
+    """
+    ids = {a["id"] for a in p["activities"]}
+    if target not in ids:
+        raise PipelineError(f"target {target!r} is not an activity")
+    scope = _closure(p, target)
+    prod = _producers(p)
+    by_id = {a["id"]: a for a in p["activities"]}
+    ext = {e["artifact"]: e for e in p["external"]}
+    touched = {c["artifact"] for i in scope for c in by_id[i]["consumes"]} | {x["artifact"] for i in scope for x in by_id[i]["produces"]}
+    groups = []
+    for g in p["same_generation"]:
+        members = []
+        for art in g:
+            producers = [{"activity": w, "generation": next((x["generation"] for x in by_id[w]["produces"] if x["artifact"] == art), None)}
+                         for w in prod.get(art, [])]
+            members.append({"artifact": art, "producers": producers, "external": ext.get(art)})
+        groups.append(members)
+    body = {
+        "key_version": KEY_VERSION, "rule_version": rule_version, "target": target,
+        "conversions": sorted([a, b, str(f)] for (a, b), f in CONVERSIONS.items()),
+        "activities": [by_id[i] for i in sorted(scope)],
+        "external": [ext[a] for a in sorted(touched & ext.keys())],
+        "producers": {a: sorted(prod[a]) for a in sorted(touched & prod.keys())},
+        "internal_and_external": sorted(set(prod) & set(ext)),
+        "same_generation": groups,
+    }
+    return record_id("composition-evaluation", body)

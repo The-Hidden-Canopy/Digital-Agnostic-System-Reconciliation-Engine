@@ -222,5 +222,97 @@ class ProducerCheckerDifferential(unittest.TestCase):
             self.assertGreater(seen.get(v, 0), 10, seen)          # the generator exercises every outcome
 
 
+class EvaluationKey(unittest.TestCase):
+    def base(self):
+        return copy.deepcopy(CP.parse_pipeline(load("scoped")))
+
+    def key(self, p, target="report", version="1"):
+        return CP.evaluation_key(p, target, version)
+
+    def test_unrelated_branch_and_unrelated_external_do_not_change_the_key(self):
+        p = self.base()
+        before = self.key(p)
+        q = copy.deepcopy(p)
+        next(a for a in q["activities"] if a["id"] == "side")["consumes"][0]["requires"] = {"unit": {"equals": "x"}}
+        q["external"].append({"artifact": "unrelated", "tags": {}, "generation": "g9", "assumption": None})
+        q["activities"].reverse()                                  # declaration order is not semantic
+        self.assertEqual(self.key(q), before)
+
+    def test_every_relevant_edit_changes_the_key(self):
+        p = self.base()
+        before = self.key(p)
+        edits = {
+            "ancestor requirement": lambda q: q["activities"][0]["consumes"][0]["requires"].update(unit={"in": ["seconds", "ms"]}),
+            "ancestor produced tag": lambda q: q["activities"][0]["produces"][0]["tags"].update(unit="milliseconds"),
+            "target's own generation": lambda q: q["activities"][1]["produces"][0].update(generation="g2"),
+            "consumed external tag": lambda q: q["external"][0]["tags"].update(unit="milliseconds"),
+            "external generation": lambda q: q["external"][0].update(generation="g2"),
+            "dependency": lambda q: q["activities"][1].update(depends_on=[]),
+            "same_generation group": lambda q: q.update(same_generation=[["raw", "text"]]),
+        }
+        for name, edit in edits.items():
+            q = copy.deepcopy(p)
+            edit(q)
+            self.assertNotEqual(self.key(q), before, name)
+        self.assertNotEqual(self.key(p, version="2"), before)
+        self.assertNotEqual(self.key(p, "normalize"), before)
+
+    def test_out_of_scope_producer_collision_and_internal_external_are_covered(self):
+        p = self.base()
+        before = self.key(p)
+        q = copy.deepcopy(p)
+        q["activities"].append({"id": "rival", "consumes": [], "produces": [{"artifact": "text", "tags": {}, "generation": "g1"}], "depends_on": [], "conversion": None})
+        self.assertNotEqual(self.key(q), before)                   # a second producer of a scope artifact is a collision
+        r = copy.deepcopy(p)
+        r["external"].append({"artifact": "junk", "tags": {}, "generation": "g1", "assumption": None})
+        self.assertNotEqual(self.key(r), before)                   # 'junk' is produced out of scope and declared external
+        with self.assertRaises(CP.PipelineError):
+            self.key(p, "nope")
+
+    def test_equal_keys_imply_equal_verdicts_on_random_edits(self):
+        gen = ProducerCheckerDifferential().random_pipeline
+        rng = random.Random(23)
+        equal = differ = 0
+        for _ in range(600):
+            raw = gen(rng)
+            try:
+                a = CP.parse_pipeline(copy.deepcopy(raw))
+            except CP.PipelineError:
+                continue
+            b = copy.deepcopy(a)
+            acts = b["activities"]
+            choice = rng.randrange(7)
+            act = rng.choice(acts)
+            if choice == 0 and act["consumes"]:
+                act["consumes"][0]["requires"] = {"unit": {"equals": "milliseconds"}}
+            elif choice == 1:
+                act["produces"][0]["tags"] = {"unit": rng.choice(["seconds", "milliseconds"])}
+            elif choice == 2:
+                act["produces"][0]["generation"] = rng.choice(["g1", "g2", None])
+            elif choice == 3 and b["external"]:
+                b["external"][0]["tags"] = {"unit": rng.choice(["seconds", "milliseconds"])}
+            elif choice == 4:
+                act["depends_on"] = []
+            elif choice == 5:
+                acts.pop(rng.randrange(len(acts)))
+            else:
+                act["conversion"] = None if act["conversion"] else {"from": "seconds", "to": "milliseconds", "factor": "1000"}
+            if not acts:
+                continue
+            target = rng.choice(acts)["id"]
+            if target not in {x["id"] for x in a["activities"]}:
+                continue
+            ka, kb = CP.evaluation_key(a, target), CP.evaluation_key(b, target)
+            ra, rb = CP.analyze(a, target), CP.analyze(b, target)
+            view = lambda r: (r["overall"], [(o["id"], o["verdict"], o["reason"], o["witness"]) for o in r["obligations"]])
+            if ka == kb:
+                equal += 1
+                self.assertEqual(view(ra), view(rb), (raw, choice, target))
+            else:
+                differ += 1
+        self.assertGreater(equal, 40)                              # the property is not vacuous in either direction
+        self.assertGreater(differ, 40)
+
+
 if __name__ == "__main__":
     unittest.main()
