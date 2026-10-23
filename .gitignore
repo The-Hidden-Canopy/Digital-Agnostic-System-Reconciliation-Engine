@@ -3,3 +3,6 @@ __pycache__/
 .workspace/
 build/
 dist/
+
+# Internal engineering docuseries; keep the implementation handoff out of Git.
+/docs/docuseries/

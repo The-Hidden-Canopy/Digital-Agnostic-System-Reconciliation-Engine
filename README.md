@@ -88,12 +88,6 @@ evidence. Duplicate keys are never resolved by "last one wins".
 * **Minimization** — `verifier-lab minimize --defect reset_next_id --output case.json` shrinks a failing history to a small reproducer and
   `verifier-lab verify-counterexample case.json` reproduces it in a fresh process. The scope statement says which operators were exhausted.
 
-## Design docuseries
-
-The design this tool implements is in [`docs/docuseries/`](docs/docuseries/README.md) (chapters 00-17, with a `MANIFEST.json` of file hashes). It is a design baseline dated
-2026-10-21, not a record of what is built: [`docs/STATUS.md`](docs/STATUS.md) says what is implemented, tested, deliberately different, and not built (notably the
-jurisdiction packs of chapters 14-15, which have not been started).
-
 ## Layout
 
 ```
@@ -125,7 +119,7 @@ WORKBENCH_URL=http://127.0.0.1:8765/ node tests/e2e/browser_journey.cjs
 
 For two clean wheel builds, package-content checks and isolated installed-wheel acceptance,
 see [release checks](docs/RELEASE.md). The [build progress assessment](docs/BUILD_PROGRESS.md)
-maps the implementation to the docuseries and records the remaining release gates.
+records implementation progress and the remaining release gates.
 
 ## Security model (short)
 
