@@ -265,7 +265,8 @@ Campaigns, replay and reduction are implemented as described above, with their s
 2. Controls, checker disagreement, replay, reduction — **implemented within the documented scope**: positive/negative
    controls, independent checker tamper tests, three-way KV replay and fresh-process reduced reproducer verification.
    This does not establish the broader multi-system laboratory milestone.
-3. Hostile files / no execution / no fetching — **partial**: covered for the implemented adapters; no fuzzing campaign yet.
+3. Hostile files / no execution / no fetching — **partial**: covered for the implemented adapters; a seeded, bounded in-process mutation fuzz of all four adapters
+   (`tests/adversarial/test_mutation_fuzz.py`: no escaping exception, determinism, in-bounds spans, byte accounting) found no defects; it is not coverage-guided or sandboxed fuzzing.
 4. Reproducible export, immutable source refs, change-triggered invalidation — **done for this slice** (cross-workspace
    byte-identical packages except observation metadata; staleness tests).
 5. Jurisdiction review — **not started**.
