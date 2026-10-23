@@ -11,10 +11,11 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
+from . import riskpacks as RP
 from .canonical import CanonicalError, canonical_bytes, parse_digest, sha256_digest, strict_loads
 
 SCHEMA = "verifier-lab/purpose/1"
-PROFILE_FIELDS = {"schema", "profile_id", "version", "title", "description", "roles", "coherence", "lifecycle", "content_digest"}
+PROFILE_FIELDS = {"schema", "profile_id", "version", "title", "description", "roles", "coherence", "lifecycle", "applies_when", "content_digest"}
 ROLE_FIELDS = {"role", "description", "min", "max", "value_kind", "optional"}
 COHERENCE_FIELDS = {"id", "type", "fact"}
 LIFECYCLE_FIELDS = {"target", "history", "stages", "requires", "invalidating"}
@@ -105,6 +106,11 @@ def load_profile(data: bytes) -> PurposeProfile:
             raise PurposeError("bad_cardinality", f"optional role {r['role']} must have min 0")
         if r.get("value_kind", "any") not in VALUE_KINDS:
             raise PurposeError("bad_value_kind", r["role"])
+    if "applies_when" in body:
+        try:
+            RP.validate_predicate(body["applies_when"])
+        except RP.PackError as exc:
+            raise PurposeError("bad_applicability", str(exc)) from exc
     coh_ids = set()
     for c in body.get("coherence", []):
         if not isinstance(c, dict) or set(c) != COHERENCE_FIELDS or c["type"] != "same_value" or not isinstance(c["fact"], str) or not c["fact"]:
@@ -175,6 +181,8 @@ class PurposeCatalog:
 
 def strengthens(strong: PurposeProfile, weak: PurposeProfile) -> tuple[bool, list[str]]:
     """Mechanical relation only (never by name): `strong` requires at least everything `weak` requires."""
+    if "applies_when" in strong.body or "applies_when" in weak.body:
+        return False, ["applicability_conditions_not_comparable"]
     why = []
     sr = {r["role"]: r for r in strong.roles}
     for r in weak.roles:
@@ -223,10 +231,36 @@ def check_bindings(profile: PurposeProfile, bindings: dict) -> dict:
     return dict(sorted(out.items()))
 
 
-def evaluate_purpose(profile: PurposeProfile, bindings: dict, sources: list[dict]) -> dict:
-    """sources: [{artifact_id, name, coverage, facts, blocked_keys}] - only independently supplied, extracted evidence."""
+def evaluate_purpose(profile: PurposeProfile, bindings: dict, sources: list[dict], context: dict | None = None) -> dict:
+    """sources: [{artifact_id, name, coverage, facts, blocked_keys}] - only independently supplied, extracted evidence.
+
+    context: run context facts, consulted only by an optional `applies_when` condition (see docs/FORMATS.md)."""
     bindings = check_bindings(profile, bindings)
     obligations: list[dict] = []
+    condition = profile.body.get("applies_when")
+    if condition is not None:
+        facts = context or {}
+        tri, used = RP.evaluate_predicate(condition, facts)
+        witness = {"predicate": condition, "facts": used, "values": {k: facts[k] for k in used if k in facts}}
+        if tri is RP.Tri.FALSE:
+            skipped = [f"role:{r['role']}" for r in sorted(profile.roles, key=lambda x: x["role"]) if not (r.get("optional") and r["role"] not in bindings)]
+            skipped += [f"coherence:{c['id']}" for c in profile.body.get("coherence", [])]
+            if profile.body.get("lifecycle"):
+                skipped += ["lifecycle:records", "lifecycle:prerequisites", "lifecycle:current_validity"]
+            return {"profile": profile.ref(), "bindings": bindings, "overall": "NOT_APPLICABLE",
+                    "obligations": [{"id": "applicability", "kind": "applicability", "verdict": "NOT_APPLICABLE",
+                                     "reason": "applicability_established_false", "witness": witness, "would_resolve": ""}],
+                    "not_evaluated": skipped,
+                    "scope": {"evaluated_sources": [], "unreadable_sources": [], "sources_outside_evaluation_scope": sorted(s["name"] for s in sources),
+                              "statement": "The profile's applicability condition is false under the supplied context, so no evidence obligation was evaluated."},
+                    "would_resolve": []}
+        if tri is RP.Tri.TRUE:
+            obligations.append({"id": "applicability", "kind": "applicability", "verdict": "SUPPORTED",
+                                "reason": "applicability_established_true", "witness": witness, "would_resolve": ""})
+        else:
+            obligations.append({"id": "applicability", "kind": "applicability", "verdict": "INSUFFICIENT_EVIDENCE",
+                                "reason": "applicability_unknown", "witness": witness,
+                                "would_resolve": f"State the context fact(s) {', '.join(used)} (for example --context KEY=VALUE). A missing fact is never treated as false."})
     usable = [s for s in sources if s["coverage"] in ("PARSED", "PARTIALLY_PARSED")]
     unreadable = [s["name"] for s in sources if s["coverage"] not in ("PARSED", "PARTIALLY_PARSED")]
     supplying: dict[str, dict] = {}

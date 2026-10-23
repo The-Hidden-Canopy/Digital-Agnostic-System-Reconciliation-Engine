@@ -432,6 +432,10 @@ def _check_purposes(result, bundle, files, arts, records, rep):
         rep.check("no_purposes_no_assessments", not recorded, "result carries purpose assessments although none is pinned in the bundle")
         return
     profiles = [_strict(files[a["relative_path"]]) for a in arts.values() if a["media_type"] == PURPOSE_MEDIA]
+    ctx_art = next((a for a in arts.values() if a["media_type"] == CONTEXT_MEDIA), None)
+    ctx = _strict(files[ctx_art["relative_path"]]) if ctx_art else None
+    if ctx is not None and result.get("context_digest") is not None:
+        rep.check("purpose_context_digest_pinned", result["context_digest"] == _dg(_canon(ctx)), "context facts differ from the digest in the result")
     expected = []
     for a in sorted(pa, key=lambda x: x["id"]):
         b = _strict(files[a["relative_path"]])
@@ -454,7 +458,10 @@ def _check_purposes(result, bundle, files, arts, records, rep):
             srcs.append({"id": sid, "name": arts[sid]["relative_path"], "coverage": rec["coverage"]["summary"], "facts": rec["facts"],
                          "blocked": rec.get("blocked_keys", []), "rend": rend})
         try:
-            expected.append((ref, _purpose(body, b["bindings"], srcs, files, arts)))
+            if "applies_when" in body and not rep.check(f"purpose_context_present:{ref['profile_id']}", isinstance(ctx, dict),
+                                                       "profile has an applicability condition but the package pins no context facts"):
+                continue
+            expected.append((ref, _purpose(body, b["bindings"], srcs, files, arts, ctx or {})))
         except Reject as exc:
             rep.check(f"purpose_rederived:{ref['profile_id']}", False, str(exc))
     got = result.get("purposes") or []
@@ -468,11 +475,17 @@ def _check_purposes(result, bundle, files, arts, records, rep):
                   f"re-derived {overall} {mine}; result says {g and g['overall']} {theirs}")
 
 
-def _purpose(profile, bindings, srcs, files, arts):
+def _purpose(profile, bindings, srcs, files, arts, context=None):
     """Independent evaluator: returns (overall, [(obligation id, verdict, reason)])."""
     usable = [s for s in srcs if s["coverage"] in ("PARSED", "PARTIALLY_PARSED")]
     unreadable = [s for s in srcs if s["coverage"] not in ("PARSED", "PARTIALLY_PARSED")]
     out, supplying = [], {}
+    if "applies_when" in profile:
+        tri, _used = _pred(profile["applies_when"], context or {})
+        if tri == "FALSE":
+            return "NOT_APPLICABLE", [("applicability", "NOT_APPLICABLE", "applicability_established_false")]
+        out.append(("applicability", "SUPPORTED", "applicability_established_true") if tri == "TRUE"
+                   else ("applicability", "INSUFFICIENT_EVIDENCE", "applicability_unknown"))
 
     def verified(s, f):
         _verify_fact(files, arts, s["rend"], f)      # the cited token bytes must really say this

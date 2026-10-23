@@ -787,7 +787,8 @@ class Service:
             for pk in packs:     # pinned by exact content digest; the pack bytes travel inside the bundle
                 add_blob(canonical_bytes(pk.body), RISKPACK_MEDIA)
                 profiles.append(ProfileRef(pk.pack_id, pk.version, pk.content_digest))
-            add_blob(canonical_bytes(facts or {}), CONTEXT_MEDIA)
+        if packs or any("applies_when" in prof.body for prof, _ in purpose_reqs):
+            add_blob(canonical_bytes(facts or {}), CONTEXT_MEDIA)       # pack applicability and purpose applicability read the same pinned facts
         ev_sources = []
         for sid, aid in evidence.items():
             rec, src_art, _ = record_cache[aid]
@@ -854,7 +855,9 @@ class Service:
                 "Risk-pack results are evidence assessments under the declared pack, context facts and rules; "
                 "they are not legal, safety or compliance certification."]
         if purpose_reqs:
-            result["purposes"] = [PU.evaluate_purpose(pr, b, ev_sources) for pr, b in purpose_reqs]
+            result["purposes"] = [PU.evaluate_purpose(pr, b, ev_sources, facts or {}) for pr, b in purpose_reqs]
+            if not packs and any("applies_when" in pr.body for pr, _ in purpose_reqs):
+                result["context_digest"] = RP.context_digest(facts or {})
             result["limitations"] = result["limitations"] + [
                 "A purpose assessment states what the supplied evidence suffices for; it is never a claim that a package is simply 'complete'."]
         meta = {"tool": "verifier-lab", "tool_version": __version__, "runtime": runtime_identity(),

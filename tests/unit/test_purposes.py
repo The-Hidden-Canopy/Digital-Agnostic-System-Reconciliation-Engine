@@ -35,6 +35,63 @@ def reasons(a):
     return {o["id"]: (o["verdict"], o["reason"]) for o in a["obligations"]}
 
 
+class Applicability(unittest.TestCase):
+    COND = {"op": "eq", "fact": "environment", "value": "production"}
+
+    def profile(self, base=WEAK, cond=None, pid="gated"):
+        body = {k: v for k, v in copy.deepcopy(base.body).items() if k != "content_digest"}
+        body.update(profile_id=pid, applies_when=cond or self.COND)
+        return PU.load_profile(canonical_bytes(PU.seal(body)))
+
+    def assess_with(self, ctx, base=WEAK, names=("map.json",), cond=None):
+        prof = self.profile(base, cond)
+        roles = {r["role"] for r in prof.roles}
+        return PU.evaluate_purpose(prof, {k: v for k, v in BIND.items() if k in roles}, [source(n) for n in names], ctx)
+
+    def test_true_false_and_unknown_condition_have_distinct_outcomes(self):
+        ok = self.assess_with({"environment": "production"})
+        self.assertEqual((ok["overall"], reasons(ok)["applicability"]), ("SUPPORTED", ("SUPPORTED", "applicability_established_true")))
+        self.assertEqual(ok["obligations"][0]["id"], "applicability")                       # always first, so readers see the scope question first
+        no = self.assess_with({"environment": "lab"})
+        self.assertEqual(no["overall"], "NOT_APPLICABLE")
+        self.assertEqual([o["id"] for o in no["obligations"]], ["applicability"])
+        self.assertIn("role:entries_count", no["not_evaluated"])                           # skipped work is listed, never silently dropped
+        self.assertEqual(no["obligations"][0]["witness"]["values"], {"environment": "lab"})
+        unknown = self.assess_with({})
+        self.assertEqual(unknown["overall"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(reasons(unknown)["applicability"], ("INSUFFICIENT_EVIDENCE", "applicability_unknown"))
+        self.assertEqual(reasons(unknown)["role:entries_count"][0], "SUPPORTED")           # evidence is still evaluated and visible
+        self.assertIn("environment", " ".join(unknown["would_resolve"]))
+
+    def test_missing_or_ill_typed_facts_never_become_not_applicable(self):
+        self.assertEqual(self.assess_with({"unrelated": 1})["overall"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(self.assess_with({"environment": None})["overall"], "NOT_APPLICABLE")      # an explicit null is a stated absence, not a gap
+        tier = {"op": "eq", "fact": "tier", "value": 1}
+        self.assertEqual(self.assess_with({"tier": True}, cond=tier)["overall"], "NOT_APPLICABLE")  # True is not 1: no coercion
+        self.assertEqual(self.assess_with({"tier": 1}, cond=tier)["overall"], "SUPPORTED")
+
+    def test_unknown_applicability_does_not_hide_a_contradiction(self):
+        a = self.assess_with({}, base=STRONG, names=("map.json", "counters-g6.json", "history.json"))
+        self.assertEqual(a["overall"], "CONTRADICTED")
+        self.assertEqual(reasons(a)["applicability"][0], "INSUFFICIENT_EVIDENCE")
+
+    def test_compound_conditions_use_three_valued_logic(self):
+        cond = {"op": "or", "args": [{"op": "eq", "fact": "environment", "value": "production"}, {"op": "exists", "fact": "audited"}]}
+        self.assertEqual(self.assess_with({"environment": "production"}, cond=cond)["overall"], "SUPPORTED")    # TRUE or UNKNOWN is TRUE
+        self.assertEqual(self.assess_with({"environment": "lab"}, cond=cond)["overall"], "INSUFFICIENT_EVIDENCE")  # FALSE or UNKNOWN is UNKNOWN
+        self.assertEqual(self.assess_with({"environment": "lab", "audited": None}, cond=cond)["overall"], "NOT_APPLICABLE")
+
+    def test_invalid_conditions_are_profile_errors_and_scopes_are_not_comparable(self):
+        for bad in ({"op": "nope"}, "text", {"op": "eq", "fact": "x"}, {"op": "and", "args": []}, {"op": "eq", "fact": "x", "value": 1, "extra": 1}):
+            body = {k: v for k, v in WEAK.body.items() if k != "content_digest"}
+            body.update(profile_id="bad", applies_when=bad)
+            with self.assertRaises(PU.PurposeError) as cm:
+                PU.load_profile(canonical_bytes(PU.seal(body)))
+            self.assertEqual(cm.exception.code, "bad_applicability", bad)
+        ok, why = PU.strengthens(self.profile(STRONG), WEAK)
+        self.assertEqual((ok, why), (False, ["applicability_conditions_not_comparable"]))
+
+
 class ProfileValidation(unittest.TestCase):
     def body(self, **over):
         b = {"schema": PU.SCHEMA, "profile_id": "p", "version": "1", "title": "t",

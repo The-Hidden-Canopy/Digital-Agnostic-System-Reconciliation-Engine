@@ -162,3 +162,85 @@ class PurposeTamper(PurposeRuns):
                 (d / "artifacts" / sha256_digest(new)[7:]).write_bytes(new)
         self.rehash(d)
         self.failing(d)
+
+
+class PurposeApplicability(WorkspaceCase):
+    COND = {"op": "eq", "fact": "environment", "value": "production"}
+
+    def setUp(self):
+        super().setUp()
+        body = {k: v for k, v in copy.deepcopy(PU.PurposeCatalog(None).get("inspect-checkpoint").body).items() if k != "content_digest"}
+        body.update(profile_id="inspect-in-production", applies_when=self.COND)
+        self.svc.install_purpose(canonical_bytes(PU.seal(body)))
+        self.evidence = self.imp(FIX / "map.json")["id"]
+
+    def run_in(self, context, svc=None):
+        svc = svc or self.svc
+        started = svc.start_run([], [self.evidence], purposes=[{"profile_id": "inspect-in-production", "bindings": WEAK_BIND}], context=context)
+        job = svc.wait_job(started["job_id"])
+        self.assertEqual(job["state"], "SUCCEEDED", job["error"])
+        return svc.get_run(started["run_id"])
+
+    def test_each_context_outcome_is_reported_and_independently_verified(self):
+        expect = {"production": "SUPPORTED", "lab": "NOT_APPLICABLE", None: "INSUFFICIENT_EVIDENCE"}
+        for env, overall in expect.items():
+            svc = self.new_service("ctx-" + str(env))
+            self.evidence = self.imp(FIX / "map.json", svc=svc)["id"]
+            run = self.run_in({"environment": env} if env else {}, svc)
+            p = run["purposes"][0]
+            self.assertEqual(p["overall"], overall, env)
+            self.assertEqual(p["obligations"][0]["id"], "applicability")
+            res = verify_package(svc.export_run(run["id"]))
+            self.assertEqual(res["status"], "VERIFIED", (env, [c for c in res["checks"] if not c["ok"]]))
+            self.assertIn("purpose:inspect-in-production", {c["name"] for c in res["checks"]})
+
+    def test_forging_the_context_or_the_outcome_is_rejected(self):
+        run = self.run_in({"environment": "lab"})
+        pkg = self.tmp / "pkg"
+        with zipfile.ZipFile(self.svc.export_run(run["id"])) as zf:
+            zf.extractall(pkg)
+
+        def rehash(d):
+            files = [{"path": p.relative_to(d).as_posix(), "sha256": sha256_digest(p.read_bytes()), "size": len(p.read_bytes())}
+                     for p in sorted(d.rglob("*")) if p.is_file() and p.name not in ("MANIFEST.json", "run_metadata.json")]
+            m = json.loads((d / "MANIFEST.json").read_bytes())
+            m["files"] = files
+            (d / "MANIFEST.json").write_bytes(canonical_bytes(m))
+
+        def variant(name, edit):
+            d = self.tmp / name
+            shutil.copytree(pkg, d)
+            edit(d)
+            rehash(d)
+            res = verify_package(d)
+            self.assertEqual(res["status"], "REJECTED", name)
+            return {c["name"] for c in res["checks"] if not c["ok"]}
+
+        def launder(d):                                              # claim the purpose applies and is met
+            r = json.loads((d / "result.json").read_bytes())
+            p = r["purposes"][0]
+            p["overall"], p["obligations"][0]["verdict"], p["obligations"][0]["reason"] = "SUPPORTED", "SUPPORTED", "applicability_established_true"
+            (d / "result.json").write_bytes(canonical_bytes(r))
+        self.assertIn("purpose:inspect-in-production", variant("launder", launder))
+
+        def swap_context(d):                                         # keep the result, change the pinned facts
+            bundle = json.loads((d / "bundle.json").read_bytes())
+            art = next(a for a in bundle["artifacts"] if a["media_type"] == "application/vnd.verifier-lab.context-facts+json")
+            (d / art["relative_path"]).write_bytes(canonical_bytes({"environment": "production"}))
+        self.assertTrue(variant("context", swap_context))
+
+        def drop_obligation(d):
+            r = json.loads((d / "result.json").read_bytes())
+            r["purposes"][0]["obligations"] = []
+            (d / "result.json").write_bytes(canonical_bytes(r))
+        self.assertIn("purpose:inspect-in-production", variant("dropped", drop_obligation))
+
+    def test_older_runs_without_a_condition_are_unaffected(self):
+        run = self.run_with_plain()
+        self.assertEqual(run["purposes"][0]["obligations"][0]["id"], "role:entries_count")
+        self.assertEqual(verify_package(self.svc.export_run(run["id"]))["status"], "VERIFIED")
+
+    def run_with_plain(self):
+        started = self.svc.start_run([], [self.evidence], purposes=[{"profile_id": "inspect-checkpoint", "bindings": WEAK_BIND}])
+        self.assertEqual(self.svc.wait_job(started["job_id"])["state"], "SUCCEEDED")
+        return self.svc.get_run(started["run_id"])
