@@ -24,9 +24,12 @@ jobs:
           # Use Ubuntu's Python in a fresh venv instead of setup-python's
           # toolcache. Its dynamic runtime is available in the container and
           # therefore remains available to the Bubblewrap child process.
-          apt-get install --yes bubblewrap libseccomp2 libsqlite3-0 python3.12-venv
+          # The release evidence records the checked-out revision and dirty
+          # state, so Git is a required runtime dependency as well.
+          apt-get install --yes bubblewrap git libseccomp2 libsqlite3-0 python3.12-venv
           /usr/bin/python3.12 -m venv "$RUNNER_TEMP/dasre-venv"
           "$RUNNER_TEMP/dasre-venv/bin/python" -c "import sqlite3; print(sqlite3.sqlite_version)"
+          git rev-parse --is-inside-work-tree
           echo "$RUNNER_TEMP/dasre-venv/bin" >> "$GITHUB_PATH"
       - name: Install pinned Python test/build dependencies
         run: |
