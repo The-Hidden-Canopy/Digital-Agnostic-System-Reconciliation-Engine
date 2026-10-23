@@ -225,6 +225,13 @@ from one evidence document (conflicting copies go to human review); producer tag
   CI-pinned Playwright/axe-core version differs from the `RELEASE.md` table, if a pin lacks a hash, or if the package gains a
   required runtime dependency. It checks consistency only, not provenance, licenses or vulnerabilities.
 
+* Purpose applicability: a purpose profile may carry `applies_when` (risk-pack predicate grammar over run context facts). TRUE adds a supported
+  `applicability` obligation, FALSE yields overall `NOT_APPLICABLE` with the skipped obligations listed, UNKNOWN keeps the evidence visible but can
+  never be SUPPORTED. Context facts travel in the bundle; the independent checker re-derives the outcome and rejects forged context, laundered
+  outcomes and dropped obligations. The Run page names the deciding facts and leads to the context box; Findings shows the facts consulted and
+  what was not evaluated. Limits: no built-in profile uses it; profiles with conditions are not comparable by `strengthens()`; a human cannot override a FALSE
+  condition (change the context and rerun). Passed in the local Ubuntu container suite (408 tests) and release gate; no remote CI run implied.
+
 ## CI host capability note
 
 GitHub's default hosted-job sandbox blocked Bubblewrap from creating its required nested user
