@@ -167,11 +167,14 @@ class PurposeTamper(PurposeRuns):
 class PurposeApplicability(WorkspaceCase):
     COND = {"op": "eq", "fact": "environment", "value": "production"}
 
-    def setUp(self):
-        super().setUp()
+    def install(self, svc):
         body = {k: v for k, v in copy.deepcopy(PU.PurposeCatalog(None).get("inspect-checkpoint").body).items() if k != "content_digest"}
         body.update(profile_id="inspect-in-production", applies_when=self.COND)
-        self.svc.install_purpose(canonical_bytes(PU.seal(body)))
+        svc.install_purpose(canonical_bytes(PU.seal(body)))
+
+    def setUp(self):
+        super().setUp()
+        self.install(self.svc)
         self.evidence = self.imp(FIX / "map.json")["id"]
 
     def run_in(self, context, svc=None):
@@ -185,6 +188,7 @@ class PurposeApplicability(WorkspaceCase):
         expect = {"production": "SUPPORTED", "lab": "NOT_APPLICABLE", None: "INSUFFICIENT_EVIDENCE"}
         for env, overall in expect.items():
             svc = self.new_service("ctx-" + str(env))
+            self.install(svc)
             self.evidence = self.imp(FIX / "map.json", svc=svc)["id"]
             run = self.run_in({"environment": env} if env else {}, svc)
             p = run["purposes"][0]
