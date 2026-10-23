@@ -336,12 +336,20 @@ const EXPECT = { SUPPORTED: 4, CONTRADICTED: 1, INSUFFICIENT_EVIDENCE: 1 };
     await fp.route('**/api/v1/**', (route) => mode === 'http-500'
       ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal_error', message: 'simulated failure' } }) })
       : route.abort('connectionreset'));
-    for (const screen of ['import', 'review', 'run', 'findings', 'export', 'advanced', 'campaign']) {
+    for (const screen of ['import', 'review', 'run', 'findings', 'export']) {
       await fp.goto(BASE + '#/' + screen);
       await fp.reload();
       await fp.waitForFunction(() => document.querySelector('main [role=alert]') || document.querySelector('main .notice.bad'),
         null, { timeout: 15000 }).catch(() => { throw new Error(`${mode}: #/${screen} showed no visible failure`); });
       assert.ok(await fp.evaluate(() => document.querySelector('main h1') !== null), `${mode}: #/${screen} lost its heading`);
+    }
+    // Advanced and Campaign load statically; the failure must surface when the user runs something.
+    for (const [screen, button] of [['advanced', 'Run three-way experiment'], ['campaign', 'Run campaign']]) {
+      await fp.goto(BASE + '#/' + screen);
+      await fp.reload();
+      await fp.waitForSelector('main h1');
+      await fp.click(`button:has-text("${button}")`);
+      await fp.waitForSelector('main [role=alert]', { timeout: 15000 }).catch(() => { throw new Error(`${mode}: ${button} showed no visible failure`); });
     }
     await fp.unroute('**/api/v1/**');
     await fp.goto(BASE + '#/import');
