@@ -37,6 +37,7 @@ class ParserIsolation(unittest.TestCase):
         self.assertIn('/alias/python', bindings)
         self.assertIn('/runner/python/lib', bindings)
         self.assertNotIn('/runner/python/config', bindings)
+        self.assertLess(argv.index('--tmpfs'), argv.index('--ro-bind'))
         library_path_index = argv.index('LD_LIBRARY_PATH')
         self.assertIn('/runner/python/lib', argv[library_path_index + 1].replace('\\', '/'))
 

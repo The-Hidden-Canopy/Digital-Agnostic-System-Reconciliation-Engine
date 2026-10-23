@@ -53,6 +53,10 @@ def command(argv: list[str], package_root: str, mode: str) -> list[str]:
             '--clearenv', '--setenv', 'LANG', 'C.UTF-8']
     if runtime_library_dirs:
         args += ['--setenv', 'LD_LIBRARY_PATH', ':'.join(map(str, sorted(runtime_library_dirs, key=str)))]
+    # Establish the worker's private temporary directory before mounting trusted
+    # runtime paths. A release venv may itself live beneath /tmp; mounting it
+    # afterwards keeps that exact runtime readable without exposing host /tmp.
+    args += ['--size', '16777216', '--tmpfs', '/tmp']
     for root in sorted(roots, key=str):
         args += ['--ro-bind', str(root), str(root)]
     for path in libraries:
@@ -60,7 +64,7 @@ def command(argv: list[str], package_root: str, mode: str) -> list[str]:
     if Path('/etc/ld.so.cache').exists():
         args += ['--ro-bind', '/etc/ld.so.cache', '/etc/ld.so.cache']
     args += ['--proc', '/proc', '--dev', '/dev', '--dir', '/work', '--chdir', '/work',
-             '--size', '16777216', '--tmpfs', '/tmp', '--remount-ro', '/', '--', *argv]
+             '--remount-ro', '/', '--', *argv]
     return args
 
 
