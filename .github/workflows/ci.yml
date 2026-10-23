@@ -33,6 +33,9 @@ jobs:
           apt-get install --yes bubblewrap libseccomp2 libsqlite3-0 python3.12-venv
           /usr/bin/python3.12 -m venv "$RUNNER_TEMP/dasre-venv"
           "$RUNNER_TEMP/dasre-venv/bin/python" -c "import sqlite3; print(sqlite3.sqlite_version)"
+          # The privileged container sees the runner-owned checkout under a
+          # different UID. Scope Git's ownership exception to this workspace.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git rev-parse --is-inside-work-tree
           echo "$RUNNER_TEMP/dasre-venv/bin" >> "$GITHUB_PATH"
       - name: Install pinned Python test/build dependencies
