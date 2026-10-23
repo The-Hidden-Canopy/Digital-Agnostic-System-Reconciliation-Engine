@@ -15,7 +15,7 @@ and advanced breadth to follow a usable generic release.
 | Admission and document review (08, 17) | PDF/JSON/Markdown/SQL, required Linux namespaces/syscall boundary, subprocess limits, coverage, exact spans, append-only review, stale runs; adversarial and workflow suites | Optional OCR, trusted signatures, directory-package admission is outside the current upload path |
 | Campaigns and independent reports (09–10) | Fixed mutation/metamorphic manifests, defective controls, independent totals/witness checking, external verifier adapter | Broader mutation/rule coverage and independently implemented language/runtime checker |
 | Generic risk packs (11) | Strict data-only grammar, three-valued applicability, dependency/version checks, UI obligations and proposed remediation | Catalog breadth; reviewed jurisdiction source mappings |
-| Packaging and release evidence (12, chapter 13 K) | `tools/check_release.py`: hashed Python build/parser inputs, two matching clean wheel builds, exact content allowlist, isolated offline installs, four-format CLI and optional installed-wheel Chromium journey; CI definition added | CI must actually execute remotely; broader platform matrix; full provenance/license review and owner release review |
+| Packaging and release evidence (12, chapter 13 K) | `tools/check_release.py`: hashed Python build/parser inputs, two matching clean wheel builds, exact content allowlist, isolated offline installs, four-format CLI and optional installed-wheel Chromium journey; privileged Linux/Python 3.12 CI passed on 2026-10-23 | Broader platform matrix; full provenance/license review and owner release review |
 | Workbench (16) | Shared backend, default five-step workflow, job cancellation/recovery, findings/spans, advanced composition/purpose/campaign pages, four-format browser journey | Screen-reader accessibility audit; broader failure-state/browser coverage; advanced graph/replay visualizations |
 | Jurisdiction packs (14–15) | Design/source baselines only; no shipped jurisdiction pack | Official-source review, date/applicability rules, explicit incomplete coverage and qualified human review before shipping |
 
@@ -63,9 +63,9 @@ the path for every admitted format; SQL retries retain the prior declared dialec
 unless the user chooses another one.
 
 Focused retry regression checks passed under explicitly selected portable
-development configuration on the recovered Windows workspace. The required
-Linux/Bubblewrap full suite remains a CI/host-validation requirement; the local
-Windows environment correctly fails closed in required parser mode.
+development configuration on the recovered Windows workspace and in the
+required Linux/Bubblewrap CI suite. The local Windows environment correctly
+fails closed in required parser mode.
 
 ## Full laboratory continuation
 
@@ -101,13 +101,14 @@ pass. Keyboard navigation remains a separate exercised path. Screen-reader revie
 Current local evidence: **365 Python tests passed**, all nine requested populated-screen audits
 completed without automated WCAG A/AA violations, the deliberate negative control was detected,
 and installed-wheel/built-artifact checks passed. [The saved evidence](validation/linux-python312.json)
-identifies source bytes and preserves manual review targets. It does not establish a remote CI run.
+identifies source bytes and preserves manual review targets. The declared privileged Linux/Python
+3.12 CI target also passed the full suite, clean installed-wheel check, browser journey and
+automated accessibility gate on 2026-10-23; this does not establish broader platform support.
 
 ## Next work
 
-1. Execute the new CI on the declared Linux/Python 3.12 target and retain its exact evidence.
-2. Complete manual accessibility review and remaining failure-state coverage; complete dependency/provenance review.
-3. Expand platform and browser validation before widening support claims.
-4. Take an owner review checkpoint for the exact release artifact and public files.
-5. Continue optional laboratory breadth and reviewed jurisdiction packs against their separate
+1. Complete manual accessibility review and remaining failure-state coverage; complete dependency/provenance review.
+2. Expand platform and browser validation before widening support claims.
+3. Take an owner review checkpoint for the exact release artifact and public files.
+4. Continue optional laboratory breadth and reviewed jurisdiction packs against their separate
    acceptance criteria. No machine-generated pack should imply legal certification.

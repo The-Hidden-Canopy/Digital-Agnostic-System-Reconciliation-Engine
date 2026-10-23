@@ -183,9 +183,9 @@ The cache-key scheme for incremental re-evaluation (claim + transitive evidence 
 * `verifier-lab reextract SOURCE_ID [--dialect ...]` and workbench retry controls expose the same
   shared-service behavior for all admitted formats; SQL defaults to its most recently declared
   dialect.
-* Focused retry tests passed only in explicit portable development configuration on the recovered
-  Windows workspace. Required Linux isolation tests and the full suite remain to be run by the
-  declared Linux/Python 3.12 CI target; this is not a claim of local security validation.
+* Focused retry tests also passed in the required Linux/Python 3.12 CI target with Bubblewrap
+  enabled. The recovered Windows workspace remains explicit portable-development evidence only;
+  it is not a local security-validation claim.
 
 ## CI host capability note
 
@@ -197,8 +197,9 @@ portable parser mode. The minimal container also needs `libsqlite3-0` because th
 `_sqlite3` extension dynamically links against the image's system SQLite runtime. CI uses the
 container's Ubuntu Python 3.12 in a fresh virtual environment rather than the hosted toolcache,
 so the interpreter's dynamic libraries remain available in Bubblewrap; it verifies the SQLite
-import before it starts the suite. The exact remote outcome remains CI evidence, not a
-cross-platform claim.
+import before it starts the suite. On 2026-10-23, the privileged hosted run passed the complete
+suite plus clean installed-wheel, Chromium journey and automated accessibility gates. Its exact
+remote outcome is CI evidence, not a cross-platform claim.
 
 ## Deliberate deviations from the docuseries
 
