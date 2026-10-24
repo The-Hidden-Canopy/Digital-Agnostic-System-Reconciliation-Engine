@@ -238,6 +238,12 @@ from one evidence document (conflicting copies go to human review); producer tag
   Both carry text alternatives and were audited with axe-core (now eleven audited screens). Limits: the graph shows the newest 200 of each kind,
   staleness is the stored freshness check (no re-evaluation), and the timeline reflects what the experiment reports (paths stop at their first divergence).
   Local Ubuntu container suite (412 tests) and release gate passed; no remote CI run implied; no screen-reader review.
+  Remote CI: GitHub Actions run 44 (Verification and release checks) on `c22b0dc` completed with conclusion `success` (read from the public Actions API,
+  2026-10-23). That covers that workflow on that commit only; it is not cross-platform, audit or legal evidence.
+  Decision on `evaluation_key`: evaluation is deliberately not skipped. The key can only be computed after the pipeline is parsed, a reused finding would cite
+  the earlier run's evidence artifacts (the checker pins those), and the saved work is one small analysis, so the soundness risk outweighs the gain.
+  The key stays a checker-verified reuse report.
+  Purpose applicability has no built-in profiles (profiles are user-supplied) and no manual override of a FALSE condition, by design.
 
 ## CI host capability note
 
