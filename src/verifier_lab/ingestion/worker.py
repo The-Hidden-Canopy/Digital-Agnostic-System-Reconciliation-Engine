@@ -63,20 +63,35 @@ def _apply_sandbox(limits: Limits) -> None:
     socket.getaddrinfo = _blocked  # type: ignore[assignment]
 
 
-def main(argv: list[str]) -> int:
+def dispatch(request: dict, data: bytes) -> dict:
     from .isolation import IsolationUnavailable
-    request = json.loads(argv[1])
     limits = Limits(**request["limits"])
-    data = sys.stdin.buffer.read()
     try:
         _apply_sandbox(limits)
-        ext = run_in_process(request["format"], data, request.get("dialect"), limits)
-        out = {"ok": True, "extraction": to_wire(ext)}
+        if request["format"] == "repository-python":
+            from ..repository_map import parse_python
+            out = {"ok": True, "extraction": parse_python(data, request.get("dialect") or "source.py")}
+        elif request["format"] in ("repository-typescript", "repository-tsx", "repository-jsx", "repository-cpp"):
+            from ..repository_trees import parse_source
+            out = {"ok": True, "extraction": parse_source(data, request.get("dialect") or "source", request["format"].removeprefix("repository-"))}
+        elif request["format"] == "repository-javascript":
+            from ..repository_javascript import parse_javascript
+            out = {"ok": True, "extraction": parse_javascript(data, request.get("dialect") or "source.js")}
+        else:
+            ext = run_in_process(request["format"], data, request.get("dialect"), limits)
+            out = {"ok": True, "extraction": to_wire(ext)}
     except IsolationUnavailable:
         out = {"ok": False, "error": "isolation_unavailable"}
     except MemoryError:
         out = {"ok": False, "error": "memory_limit"}
     except RecursionError:
         out = {"ok": False, "error": "recursion_limit"}
+    return out
+
+
+def main(argv: list[str]) -> int:
+    request = json.loads(argv[1])
+    data = sys.stdin.buffer.read()
+    out = dispatch(request, data)
     sys.stdout.write(json.dumps(out))
     return 0

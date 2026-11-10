@@ -16,6 +16,7 @@ LOOPBACK = ("127.0.0.1", "::1", "localhost")
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
        "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 STATIC = {"/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
+          "/static/repository-layout.js": ("repository-layout.js", "text/javascript; charset=utf-8"),
           "/static/style.css": ("style.css", "text/css; charset=utf-8")}
 
 
@@ -206,6 +207,79 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "events":
                 return self._json(200, svc.job_events(parts[1], _int_param(qs, "after", 0, 0)))
         else:
+            if parts == ["repository", "scan"]:
+                body = self._json_body()
+                if set(body) != {"path", "content_access"}:
+                    raise ServiceError(422, "bad_repository_request", "Choose who will review this repository")
+                if body["content_access"] not in ("adult", "adult_reviewed"):
+                    raise ServiceError(403, "adult_review_required", "Independent child access to unreviewed repositories is unavailable")
+                result = svc.repository_map(body["path"], content_access=body["content_access"])
+                if body["content_access"] == "adult_reviewed":
+                    result["saved_projects"] = []
+                return self._json(200, result)
+            if parts == ["repository", "reconnect"]:
+                body = self._json_body()
+                if set(body) != {"location_id", "project_id", "scan_id"}:
+                    raise ServiceError(422, "bad_repository_request")
+                return self._json(200, svc.repository_reconnect(**body))
+            if parts == ["repository", "remember"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "scan_id"}:
+                    raise ServiceError(422, "bad_repository_request")
+                return self._json(200, svc.repository_remember(**body))
+            if parts in (["repository", "shelf"], ["repository", "forget"]):
+                body = self._json_body()
+                expected = {"content_access"} if parts[-1] == "shelf" else {"content_access", "location_id"}
+                if set(body) != expected:
+                    raise ServiceError(422, "bad_repository_request")
+                if body["content_access"] != "adult":
+                    raise ServiceError(403, "adult_session_required")
+                return self._json(200, svc.repository_shelf() if parts[-1] == "shelf" else svc.repository_forget(body["location_id"]))
+            if parts == ["repository", "guided-path"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "node_id", "goal", "level", "prefer_unreviewed", "scan_id"}:
+                    raise ServiceError(422, "bad_guided_path_request")
+                return self._json(200, svc.repository_guided_path(**body))
+            if parts == ["repository", "label-path"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "node_id", "target_id", "level", "include_inferred", "include_organization", "scan_id"}:
+                    raise ServiceError(422, "bad_label_path_request")
+                return self._json(200, svc.repository_label_path(**body))
+            if parts == ["repository", "compare-call"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "node_id", "call_index", "level", "scan_id"}:
+                    raise ServiceError(422, "bad_call_comparison")
+                return self._json(200, svc.repository_compare_call(**body))
+            if parts == ["repository", "explain"]:
+                body = self._json_body()
+                if set(body) not in ({"repo_id", "node_id", "topic", "level", "scan_id"}, {"repo_id", "node_id", "topic", "level", "scan_id", "use_local_assistant"}):
+                    raise ServiceError(422, "bad_explanation_request")
+                return self._json(200, svc.repository_explain(**body))
+            if parts == ["repository", "progress"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "node_id", "reviewed", "scan_id"}:
+                    raise ServiceError(422, "bad_progress_request")
+                return self._json(200, svc.repository_progress(**body))
+            if parts == ["repository", "clear-progress"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "scan_id"}:
+                    raise ServiceError(422, "bad_progress_request")
+                return self._json(200, svc.repository_progress_clear(**body))
+            if parts == ["repository", "practice"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "node_id", "answer", "activity", "scan_id"}:
+                    raise ServiceError(422, "bad_practice_request")
+                return self._json(200, svc.repository_practice(**body))
+            if parts == ["repository", "rebind-label"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "old_node_id", "new_node_id", "scan_id"}:
+                    raise ServiceError(422, "bad_label_request")
+                return self._json(200, svc.repository_rebind_label(**body))
+            if parts == ["repository", "label"]:
+                body = self._json_body()
+                if set(body) != {"repo_id", "node_id", "label", "scan_id"}:
+                    raise ServiceError(422, "bad_label_request")
+                return self._json(200, svc.repository_label(**body))
             if parts == ["candidates"]:
                 body = self._json_body()
                 fields = {"source_id", "attempt_id", "byte_start", "byte_end", "interpretation", "reason"}
@@ -296,5 +370,5 @@ def _string_list(body: dict, name: str) -> list[str]:
     return value
 
 
-def serve(workspace: Path, host: str = "127.0.0.1", port: int = 8765) -> Workbench:
-    return Workbench(Service(workspace), host, port)
+def serve(workspace: Path, host: str = "127.0.0.1", port: int = 8765, *, limits=None, local_assistant=None) -> Workbench:
+    return Workbench(Service(workspace, limits=limits, local_assistant=local_assistant), host, port)

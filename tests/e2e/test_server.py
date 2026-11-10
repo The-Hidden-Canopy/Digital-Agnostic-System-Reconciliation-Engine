@@ -84,13 +84,20 @@ class Security(ServerCase):
         text = html.decode()
         self.assertNotIn("__TOKEN__", text)
         self.assertIn(self.wb.token, text)
-        self.assertEqual(text.count("<script"), 1)
+        self.assertEqual(text.count("<script"), 2)
+        self.assertIn('src="/static/repository-layout.js"', text)
+        self.assertLess(text.index('src="/static/repository-layout.js"'), text.index('src="/static/app.js"'))
         self.assertIn('src="/static/app.js"', text)
         self.assertNotIn("http://", text.replace("http://www.w3.org", ""))
         _, js, _ = self.call("GET", "/static/app.js")
         self.assertNotIn(b"innerHTML", js)
         self.assertNotIn(b"eval(", js)
         self.assertNotIn(b"document.write", js)
+        status, layout, response = self.call("GET", "/static/repository-layout.js")
+        self.assertEqual(status, 200)
+        self.assertIn("text/javascript", response.headers["Content-Type"])
+        self.assertIn(b"ElucidaryLayout", layout)
+        self.assertNotIn(b"eval(", layout)
 
     def test_loopback_only_binding(self):
         with self.assertRaises(ValueError):

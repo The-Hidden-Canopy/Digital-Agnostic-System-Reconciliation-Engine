@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import secrets
 import threading
 import time
 from collections import Counter
@@ -60,7 +62,7 @@ class JobContext:
 
 class Service:
     def __init__(self, workspace: Path, *, limits: Limits | None = None, registry=None,
-                 max_workers: int = 2, admission: AdmissionLimits | None = None):
+                 max_workers: int = 2, admission: AdmissionLimits | None = None, local_assistant=None):
         self.store = Store(Path(workspace))
         self.limits = limits or Limits()
         self.admission = admission or AdmissionLimits()
@@ -69,11 +71,385 @@ class Service:
         self.packs = RP.PackCatalog(self.store.root / "packs", self.registry.implemented_predicates())
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="vl-job")
         self.hooks: dict = {}
+        self.repository_snapshots: dict = {}
+        self.repository_edges: dict = {}
+        self.repository_scan_ids: dict = {}
+        self.repository_content_access: dict = {}
+        self.repository_assistant_permitted: dict = {}
+        self.repository_roots: dict = {}
+        self.local_assistant = local_assistant
         self._recover()
 
     def close(self):
         self.executor.shutdown(wait=True, cancel_futures=False)
         self.store.close()
+
+    def repository_map(self, path: str, content_access: str = "internal") -> dict:
+        from .repository_map import scan_repository
+        if not isinstance(path, str) or not path.strip() or len(path) > 4096:
+            raise ServiceError(422, "bad_repository_path", "Enter a local directory path")
+        if content_access not in ("internal", "adult", "adult_reviewed"):
+            raise ServiceError(403, "adult_review_required")
+        try:
+            result = scan_repository(path, limits=self.limits)
+        except ExtractionFailure as exc:
+            raise ServiceError(503, exc.code, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise ServiceError(422, "repository_unavailable", str(exc)) from exc
+        try:
+            canonical = Path(path).expanduser().absolute().resolve(strict=True)
+        except OSError as exc:
+            raise ServiceError(409, "stale_repository", "The repository location changed during the scan") from exc
+        if hashlib.sha256(os.fsencode(str(canonical))).hexdigest() != result["repo_id"]:
+            raise ServiceError(409, "stale_repository", "The repository location changed during the scan")
+        with self.store.lock:
+            location_id = result["repo_id"]
+            location = self.store.q1("SELECT project_id FROM repository_locations WHERE location_id=?", (location_id,))
+            if location:
+                result["repo_id"] = location["project_id"]
+                self.store.x("UPDATE repository_projects SET name=? WHERE project_id=? AND name LIKE 'Saved repository %'", (result["root_name"],result["repo_id"]))
+            else:
+                self.store.x("INSERT OR IGNORE INTO repository_projects(project_id,name) VALUES(?,?)", (location_id,result["root_name"]))
+                self.store.x("INSERT INTO repository_locations(location_id,project_id) VALUES(?,?)", (location_id,location_id))
+            result["location_id"] = location_id
+            result["saved_projects"] = [{"id": r["project_id"], "name": r["name"], "labels": r["labels"], "progress": r["progress"]} for r in self.store.q(
+                "SELECT p.project_id,p.name, "
+                "(SELECT COUNT(*) FROM repository_labels l WHERE l.repo_id=p.project_id) AS labels, "
+                "(SELECT COUNT(*) FROM repository_progress v WHERE v.repo_id=p.project_id) AS progress "
+                "FROM repository_projects p WHERE p.project_id<>? AND "
+                "(EXISTS(SELECT 1 FROM repository_labels l WHERE l.repo_id=p.project_id) OR "
+                " EXISTS(SELECT 1 FROM repository_progress v WHERE v.repo_id=p.project_id)) ORDER BY p.name,p.project_id", (result["repo_id"],))]
+            nodes = {n["id"]: n for n in result["nodes"]}
+            result["scan_id"] = secrets.token_urlsafe(18)
+            self.repository_snapshots[result["repo_id"]] = nodes
+            self.repository_edges[result["repo_id"]] = result["edges"]
+            self.repository_scan_ids[result["repo_id"]] = result["scan_id"]
+            self.repository_content_access[result["repo_id"]] = content_access
+            self.repository_roots[result["repo_id"]] = (location_id, str(canonical))
+            assistant = self.local_assistant
+            try:
+                permitted = bool(content_access == "adult" and assistant and assistant.safe_for(str(canonical)))
+                available = bool(permitted and assistant.available())
+            except Exception:
+                permitted, available = False, False
+            # Bind approval to the configured provider checked for this scan. A
+            # later configuration change must not inherit the old provider's check.
+            self.repository_assistant_permitted[result["repo_id"]] = assistant if permitted else None
+            result["local_assistant_available"] = bool(available and self.local_assistant is assistant)
+            progress = {r["node_id"]: r["fingerprint"] for r in self.store.q(
+                "SELECT node_id,fingerprint FROM repository_progress WHERE repo_id=?", (result["repo_id"],))}
+            result["unmatched_progress_count"] = sum(node_id not in nodes for node_id in progress)
+            for node in nodes.values():
+                node["reviewed"] = node["id"] in progress
+                current_digest = node.get("sha256") or node.get("fingerprint")
+                node["review_needs_refresh"] = bool(node["reviewed"] and progress[node["id"]] and current_digest and progress[node["id"]] != current_digest)
+            rows = self.store.q("SELECT l.node_id,l.label,a.kind,a.fingerprint,a.path,a.name "
+                                "FROM repository_labels l LEFT JOIN repository_label_anchors a "
+                                "ON a.repo_id=l.repo_id AND a.node_id=l.node_id WHERE l.repo_id=?", (result["repo_id"],))
+            labels = {r["node_id"]: r["label"] for r in rows}
+            by_id = {r["node_id"]: r for r in rows}
+            for node in nodes.values():
+                node["label"] = labels.get(node["id"], "")
+                anchor = by_id.get(node["id"])
+                node["label_needs_review"] = bool(anchor and anchor["fingerprint"] and node.get("fingerprint") and
+                                                  anchor["fingerprint"] != node["fingerprint"])
+            result["unmatched_labels"] = []
+            for row in rows:
+                if row["node_id"] in nodes:
+                    continue
+                matches = [n for n in nodes.values() if row["fingerprint"] and
+                           n.get("fingerprint") == row["fingerprint"] and n["kind"] == row["kind"] and not n["label"]]
+                result["unmatched_labels"].append({"node_id": row["node_id"], "label": row["label"],
+                    "kind": row["kind"], "path": row["path"], "name": row["name"],
+                    "suggested_node_id": matches[0]["id"] if len(matches) == 1 else None})
+        return result
+
+    def repository_remember(self, repo_id, scan_id):
+        with self.store.tx() as db:
+            self._check_repository_scan(repo_id, scan_id)
+            if self.repository_content_access.get(repo_id) != "adult":
+                raise ServiceError(403, "adult_session_required")
+            location = self.repository_roots.get(repo_id)
+            if not location:
+                raise ServiceError(409, "stale_repository")
+            db.execute("INSERT INTO repository_shelf(location_id,path) VALUES(?,?) "
+                       "ON CONFLICT(location_id) DO UPDATE SET path=excluded.path", location)
+        return {"remembered": True}
+
+    def repository_shelf(self):
+        with self.store.lock:
+            rows = self.store.q("SELECT s.location_id,s.path,p.name FROM repository_shelf s "
+                "JOIN repository_locations l ON l.location_id=s.location_id "
+                "JOIN repository_projects p ON p.project_id=l.project_id ORDER BY p.name,s.path")
+            return {"items": [{"location_id": r["location_id"], "path": r["path"], "name": r["name"]} for r in rows]}
+
+    def repository_forget(self, location_id):
+        if not isinstance(location_id, str) or len(location_id) != 64 or any(c not in "0123456789abcdef" for c in location_id):
+            raise ServiceError(422, "bad_repository_request")
+        with self.store.tx() as db:
+            db.execute("DELETE FROM repository_shelf WHERE location_id=?", (location_id,))
+        return {"forgotten": True}
+
+    def repository_label(self, repo_id, node_id, label, scan_id):
+        if (not isinstance(repo_id, str) or len(repo_id) != 64 or
+                any(c not in "0123456789abcdef" for c in repo_id) or
+                not isinstance(node_id, str) or not 0 < len(node_id) <= 2048 or
+                not isinstance(label, str) or len(label) > 120 or any(ord(c) < 32 for c in label)):
+            raise ServiceError(422, "bad_label", "Labels must be plain text, at most 120 characters")
+        label = label.strip()
+        with self.store.tx() as db:
+            self._check_repository_scan(repo_id, scan_id)
+            node = self.repository_snapshots.get(repo_id, {}).get(node_id)
+            if not node:
+                raise ServiceError(409, "stale_repository", "Scan this repository again before saving a label")
+            if label:
+                db.execute("INSERT INTO repository_labels(repo_id,node_id,label) VALUES(?,?,?) "
+                           "ON CONFLICT(repo_id,node_id) DO UPDATE SET label=excluded.label", (repo_id,node_id,label))
+                self._repository_anchor(db, repo_id, node)
+            else:
+                db.execute("DELETE FROM repository_labels WHERE repo_id=? AND node_id=?", (repo_id,node_id))
+                db.execute("DELETE FROM repository_label_anchors WHERE repo_id=? AND node_id=?", (repo_id,node_id))
+        return {"label": label}
+
+    @staticmethod
+    def _repository_anchor(db, repo_id, node):
+        db.execute("INSERT INTO repository_label_anchors(repo_id,node_id,kind,fingerprint,path,name) VALUES(?,?,?,?,?,?) "
+                   "ON CONFLICT(repo_id,node_id) DO UPDATE SET kind=excluded.kind,fingerprint=excluded.fingerprint,"
+                   "path=excluded.path,name=excluded.name", (repo_id,node["id"],node["kind"],node.get("fingerprint"),node.get("path"),node.get("name")))
+
+    def repository_rebind_label(self, repo_id, old_node_id, new_node_id, scan_id):
+        if not all(isinstance(v, str) and 0 < len(v) <= 2048 for v in (repo_id, old_node_id, new_node_id)):
+            raise ServiceError(422, "bad_label_request")
+        with self.store.tx() as db:
+            self._check_repository_scan(repo_id, scan_id)
+            nodes = self.repository_snapshots.get(repo_id, {})
+            target = nodes.get(new_node_id)
+            old = db.execute("SELECT l.label,a.kind FROM repository_labels l LEFT JOIN repository_label_anchors a "
+                             "ON a.repo_id=l.repo_id AND a.node_id=l.node_id WHERE l.repo_id=? AND l.node_id=?", (repo_id,old_node_id)).fetchone()
+            existing = db.execute("SELECT label FROM repository_labels WHERE repo_id=? AND node_id=?", (repo_id,new_node_id)).fetchone()
+            if not old or old_node_id in nodes or not target:
+                raise ServiceError(409, "stale_repository", "Rescan and choose an unmatched label and current item")
+            if existing or (old["kind"] and old["kind"] != target["kind"]):
+                raise ServiceError(409, "label_conflict", "Choose an unlabeled item of the same kind")
+            db.execute("INSERT INTO repository_labels(repo_id,node_id,label) VALUES(?,?,?)", (repo_id,new_node_id,old["label"]))
+            self._repository_anchor(db, repo_id, target)
+            db.execute("DELETE FROM repository_labels WHERE repo_id=? AND node_id=?", (repo_id,old_node_id))
+            db.execute("DELETE FROM repository_label_anchors WHERE repo_id=? AND node_id=?", (repo_id,old_node_id))
+        return {"label": old["label"]}
+
+    def repository_reconnect(self, location_id, project_id, scan_id):
+        if not all(isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v) for v in (location_id,project_id)):
+            raise ServiceError(422, "bad_repository_request")
+        with self.store.tx() as db:
+            location = db.execute("SELECT project_id FROM repository_locations WHERE location_id=?", (location_id,)).fetchone()
+            target = db.execute("SELECT project_id FROM repository_projects WHERE project_id=?", (project_id,)).fetchone()
+            if not location or not target:
+                raise ServiceError(409, "stale_repository", "Open the folder and select a saved repository again")
+            current = location["project_id"]
+            self._check_repository_scan(current, scan_id)
+            if current == project_id:
+                return {"project_id": project_id}
+            if (db.execute("SELECT 1 FROM repository_labels WHERE repo_id=? LIMIT 1", (current,)).fetchone() or
+                    db.execute("SELECT 1 FROM repository_progress WHERE repo_id=? LIMIT 1", (current,)).fetchone()):
+                raise ServiceError(409, "label_conflict", "This folder already has labels or progress; automatic merging is not available")
+            db.execute("UPDATE repository_locations SET project_id=? WHERE location_id=?", (project_id,location_id))
+            self.repository_scan_ids.pop(current, None)
+            self.repository_snapshots.pop(current, None)
+            self.repository_edges.pop(current, None)
+            self.repository_content_access.pop(current, None)
+            self.repository_assistant_permitted.pop(current, None)
+            self.repository_roots.pop(current, None)
+        return {"project_id": project_id}
+
+    def repository_practice(self, repo_id, node_id, answer, scan_id, activity="call"):
+        activities = {"call": ("possible call", "source", "A possible call is inferred from source; it does not establish that the call ran."),
+                      "definition": ("defines", "source", "A definition is present in the source; that alone does not show it executed."),
+                      "callsite": ("contains written call", "source", "The call expression is written in source; that alone does not show it ran."),
+                      "import": ("imports", "source", "An import or include is present in the source; it does not prove the dependency is installed or ran.")}
+        if not all(isinstance(v, str) for v in (repo_id, node_id, answer, activity)) or answer not in ("source", "ran") or activity not in activities:
+            raise ServiceError(422, "bad_practice_request")
+        kind, correct, explanation = activities[activity]
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            edge = next((e for e in self.repository_edges.get(repo_id, []) if (e["kind"] == kind or (activity == "import" and e["kind"] == "includes")) and e["evidence"] == ("inferred" if activity == "call" else "static") and
+                         (e["source"] == node_id if activity == "call" else e["target"] == node_id)), None)
+        if not edge:
+            raise ServiceError(409, "stale_repository", "Rescan and select an item with the relevant source evidence")
+        return {"correct": answer == correct, "evidence": {k: edge.get(k) for k in ("path", "line", "snippet", "sha256")},
+                "explanation": explanation, "scorer": "local-deterministic"}
+
+    def _repository_reading_challenges(self, repo_id, node_id, level, scan_id):
+        if not isinstance(node_id, str) or level not in ("beginner", "explore", "technical"):
+            raise ServiceError(422, "bad_reading_practice")
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            node = self.repository_snapshots.get(repo_id, {}).get(node_id)
+            if not node:
+                raise ServiceError(409, "stale_repository", "Choose an item in the current scan")
+            from .repository_learning import reading_challenges
+            return reading_challenges(node, level)
+
+    def repository_reading_questions(self, repo_id, node_id, level, scan_id):
+        questions = self._repository_reading_challenges(repo_id, node_id, level, scan_id)
+        return [{key: question[key] for key in ("kind", "prompt", "choices", "evidence")} for question in questions]
+
+    def repository_check_reading(self, repo_id, node_id, level, scan_id, kind, answer):
+        if kind not in ("parameter", "return", "structure") or type(answer) is not int or not 0 <= answer < 2:
+            raise ServiceError(422, "bad_reading_practice")
+        questions = self._repository_reading_challenges(repo_id, node_id, level, scan_id)
+        question = next((item for item in questions if item["kind"] == kind), None)
+        if question is None:
+            raise ServiceError(409, "practice_unavailable", "Choose a question from the current scan")
+        return {"correct": answer == question["correct_index"], "evidence": question["evidence"],
+                "explanation": question["explanation"]}
+
+    def _check_repository_scan(self, repo_id, scan_id):
+        if not isinstance(repo_id, str) or not isinstance(scan_id, str) or not scan_id.isascii() or len(scan_id) > 64:
+            raise ServiceError(409, "stale_repository", "This repository was rescanned. Open it again to use the current evidence.")
+        current = self.repository_scan_ids.get(repo_id)
+        if current is None or not secrets.compare_digest(current, scan_id):
+            raise ServiceError(409, "stale_repository", "This repository was rescanned. Open it again to use the current evidence.")
+
+    def repository_progress(self, repo_id, node_id, reviewed, scan_id):
+        if not isinstance(node_id, str) or type(reviewed) is not bool:
+            raise ServiceError(422, "bad_progress_request")
+        with self.store.tx() as db:
+            self._check_repository_scan(repo_id, scan_id)
+            node = self.repository_snapshots.get(repo_id, {}).get(node_id)
+            if not node:
+                raise ServiceError(409, "stale_repository", "Select an item in the current scan")
+            if reviewed:
+                db.execute("INSERT INTO repository_progress(repo_id,node_id,fingerprint) VALUES(?,?,?) "
+                           "ON CONFLICT(repo_id,node_id) DO UPDATE SET fingerprint=excluded.fingerprint", (repo_id,node_id,node.get("sha256") or node.get("fingerprint")))
+            else:
+                db.execute("DELETE FROM repository_progress WHERE repo_id=? AND node_id=?", (repo_id,node_id))
+        return {"reviewed": reviewed}
+
+    def repository_progress_clear(self, repo_id, scan_id):
+        with self.store.tx() as db:
+            self._check_repository_scan(repo_id, scan_id)
+            db.execute("DELETE FROM repository_progress WHERE repo_id=?", (repo_id,))
+        return {"cleared": True}
+
+    def repository_explain(self, repo_id, node_id, topic, level, scan_id, use_local_assistant=False):
+        if not isinstance(node_id, str) or topic not in ("overview", "inputs", "returns", "structure", "calls", "connections") or level not in ("beginner", "explore", "technical"):
+            raise ServiceError(422, "bad_explanation_request")
+        if type(use_local_assistant) is not bool:
+            raise ServiceError(422, "bad_explanation_request")
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            if use_local_assistant and self.repository_content_access.get(repo_id) != "adult":
+                raise ServiceError(403, "assistant_adult_only", "Local model explanations are only available in adult sessions")
+            node = self.repository_snapshots.get(repo_id, {}).get(node_id)
+            if not node:
+                raise ServiceError(409, "stale_repository", "Select an item in the current scan")
+            edges = list(self.repository_edges.get(repo_id, []))
+        from .repository_learning import explain_with_provider
+        result = explain_with_provider(node, edges, topic, level)
+        if use_local_assistant:
+            result["assistant"] = {"status": "unavailable"}
+            with self.store.lock:
+                self._check_repository_scan(repo_id, scan_id)
+                assistant = self.local_assistant
+                approved = assistant is not None and self.repository_assistant_permitted.get(repo_id) is assistant
+                root = self.repository_roots.get(repo_id, (None, None))[1]
+            if approved and root and result["evidence_cards"]:
+                try:
+                    safe = assistant.safe_for(root) and assistant.available()
+                    with self.store.lock:
+                        self._check_repository_scan(repo_id, scan_id)
+                        still_approved = (self.local_assistant is assistant and
+                                          self.repository_assistant_permitted.get(repo_id) is assistant and
+                                          self.repository_content_access.get(repo_id) == "adult")
+                    if safe and still_approved:
+                        answer = assistant.generate(result["evidence_cards"], topic, level)
+                        result["assistant"] = {"status": "ready", **answer,
+                            "limitation": "Model-generated interpretation; citations identify provided excerpts, not verified support for every claim. Check the source. No execution was observed."}
+                except Exception:
+                    result["assistant"] = {"status": "unavailable"}
+            with self.store.lock:
+                self._check_repository_scan(repo_id, scan_id)
+                if self.local_assistant is not assistant:
+                    result["assistant"] = {"status": "unavailable"}
+        return result
+
+    def repository_guided_path(self, repo_id, node_id, goal, level, prefer_unreviewed, scan_id):
+        if (not isinstance(node_id, str) or goal not in ("understand", "calls", "dependencies") or
+                level not in ("beginner", "explore", "technical") or type(prefer_unreviewed) is not bool):
+            raise ServiceError(422, "bad_guided_path_request")
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            nodes = self.repository_snapshots.get(repo_id, {})
+            if node_id not in nodes:
+                raise ServiceError(409, "stale_repository", "Select an item in the current scan")
+            edges = list(self.repository_edges.get(repo_id, []))
+            # Review marks may change without a rescan; read the current local choices.
+            marks = {r["node_id"]: r["fingerprint"] for r in self.store.q(
+                "SELECT node_id,fingerprint FROM repository_progress WHERE repo_id=?", (repo_id,))}
+            copied = []
+            for node in nodes.values():
+                item = dict(node)
+                digest = item.get("sha256") or item.get("fingerprint")
+                item["reviewed"] = item["id"] in marks
+                item["review_needs_refresh"] = bool(item["reviewed"] and marks[item["id"]] and digest and marks[item["id"]] != digest)
+                copied.append(item)
+        from .repository_learning import guided_path
+        return guided_path(copied, edges, node_id, goal, level, prefer_unreviewed)
+
+    def repository_label_path(self, repo_id, node_id, target_id, level, include_inferred, include_organization, scan_id):
+        return self._repository_path(repo_id, node_id, target_id, level, include_inferred, include_organization, scan_id, require_label=True)
+
+    def repository_item_path(self, repo_id, node_id, target_id, level, include_inferred, include_organization, scan_id):
+        return self._repository_path(repo_id, node_id, target_id, level, include_inferred, include_organization, scan_id, require_label=False)
+
+    def _repository_path(self, repo_id, node_id, target_id, level, include_inferred, include_organization, scan_id, *, require_label):
+        if (not all(isinstance(x, str) and 0 < len(x) <= 2048 for x in (node_id, target_id)) or
+                level not in ("beginner", "explore", "technical") or
+                type(include_inferred) is not bool or type(include_organization) is not bool):
+            raise ServiceError(422, "bad_label_path_request" if require_label else "bad_item_path_request")
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            nodes = self.repository_snapshots.get(repo_id, {})
+            if node_id not in nodes or target_id not in nodes:
+                raise ServiceError(409, "stale_repository", "Choose items in the current scan")
+            if require_label:
+                label = self.store.q1("SELECT label FROM repository_labels WHERE repo_id=? AND node_id=?", (repo_id, target_id))
+                if not label:
+                    raise ServiceError(409, "label_unavailable", "Save a label on this item before using it as a destination")
+            copied, edges = [dict(n) for n in nodes.values()], list(self.repository_edges.get(repo_id, []))
+        from .repository_learning import path_between_items
+        return path_between_items(copied, edges, node_id, target_id, level, include_inferred, include_organization, labeled=require_label)
+
+    def repository_possible_callers(self, repo_id, node_id, level, max_depth, scan_id):
+        if (not isinstance(node_id, str) or level not in ("beginner", "explore", "technical") or
+                type(max_depth) is not int or not 1 <= max_depth <= 3):
+            raise ServiceError(422, "bad_caller_exploration")
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            nodes = self.repository_snapshots.get(repo_id, {})
+            if node_id not in nodes or nodes[node_id].get("kind") != "function":
+                raise ServiceError(409, "caller_unavailable", "Select a function in the current scan")
+            copied = [dict(node) for node in nodes.values()]
+        from .repository_learning import possible_callers
+        return possible_callers(copied, node_id, level, max_depth)
+
+    def repository_compare_call(self, repo_id, node_id, call_index, level, scan_id):
+        if not isinstance(node_id, str) or type(call_index) is not int or call_index < 0 or level not in ("beginner", "explore", "technical"):
+            raise ServiceError(422, "bad_call_comparison")
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            nodes = self.repository_snapshots.get(repo_id, {})
+            node = nodes.get(node_id)
+            calls = node.get("call_sites", []) if node else []
+            if call_index >= len(calls):
+                raise ServiceError(409, "call_unavailable", "Select a written call from the current scan")
+            call = calls[call_index]
+            target = nodes.get(call.get("target_id"))
+            if call.get("resolution") != "inferred" or not target or target.get("kind") != "function":
+                raise ServiceError(409, "target_unresolved", "No possible target is available for this call")
+            call, target = dict(call), dict(target)
+        from .repository_learning import compare_call_with_target
+        return compare_call_with_target(call, target, level)
 
     # ------------------------------------------------------------------ jobs
     def _recover(self):

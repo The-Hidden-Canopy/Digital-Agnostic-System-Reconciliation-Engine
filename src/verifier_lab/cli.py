@@ -199,9 +199,13 @@ def _main(argv: list[str] | None) -> int:
     ap.add_argument("--parser-isolation", choices=["required", "portable"], default="required",
                     help="required Linux sandbox (default), or explicit portable development mode")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("repository-map", help="inspect Python repository source without executing it")
+    s.add_argument("path", help="local directory to inspect")
     s = sub.add_parser("serve", help="start the local workbench UI (loopback only)")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--local-assistant-executable", help="trusted local llama.cpp completion executable, outside the inspected repository (Linux isolated mode only)")
+    s.add_argument("--local-assistant-model", help="local GGUF model file, outside the inspected repository")
     s = sub.add_parser("import", help="import PDF/JSON/Markdown/SQL files")
     s.add_argument("files", nargs="+")
     s.add_argument("--dialect", default=None)
@@ -285,6 +289,16 @@ def _main(argv: list[str] | None) -> int:
     s.add_argument("bundle")
     args = ap.parse_args(argv)
 
+    if args.cmd == "repository-map":
+        from .repository_map import scan_repository
+        from .ingestion.common import Limits
+        from .ingestion.extract import ExtractionFailure
+        try:
+            _out(scan_repository(args.path, limits=Limits(isolation=args.parser_isolation)))
+            return OK
+        except (OSError, ValueError, ExtractionFailure) as exc:
+            _err(str(exc))
+            return INVALID
     if args.cmd == "verify-package":
         from .checker import verify_package
         res = verify_package(Path(args.package))
@@ -303,9 +317,16 @@ def _main(argv: list[str] | None) -> int:
         return OK if bundle else INVALID
     if args.cmd == "serve":
         from .server import serve
+        from .ingestion.common import Limits
         try:
-            wb = serve(Path(args.workspace), args.host, args.port)
-        except ValueError as exc:
+            if bool(args.local_assistant_executable) != bool(args.local_assistant_model):
+                raise ValueError("Supply both --local-assistant-executable and --local-assistant-model")
+            assistant = None
+            if args.local_assistant_executable:
+                from .repository_assistant import LocalAssistant
+                assistant = LocalAssistant(args.local_assistant_executable, args.local_assistant_model)
+            wb = serve(Path(args.workspace), args.host, args.port, limits=Limits(isolation=args.parser_isolation), local_assistant=assistant)
+        except (ValueError, OSError) as exc:
             _err(str(exc))
             return INVALID
         _err(f"Workbench: {wb.url}  (loopback only; Ctrl+C to stop)")

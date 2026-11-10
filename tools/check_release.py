@@ -22,7 +22,11 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_FILES = {
-    'verifier_lab/web/index.html', 'verifier_lab/web/app.js', 'verifier_lab/web/style.css',
+    'verifier_lab/web/index.html', 'verifier_lab/web/app.js', 'verifier_lab/web/repository-layout.js', 'verifier_lab/web/style.css',
+    'verifier_lab/third_party/esprima-LICENSE.txt',
+    'verifier_lab/third_party/tree-sitter-python-LICENSE.txt',
+    'verifier_lab/third_party/tree-sitter-typescript-LICENSE.txt',
+    'verifier_lab/third_party/tree-sitter-cpp-LICENSE.txt',
     'verifier_lab/riskpacks_data/synthetic-upload-controls.json',
     'verifier_lab/purposes_data/inspect-checkpoint.json', 'verifier_lab/purposes_data/resume-exactly.json',
 }

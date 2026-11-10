@@ -44,6 +44,20 @@ CREATE TABLE IF NOT EXISTS runs(
 CREATE TABLE IF NOT EXISTS idempotency(
   scope TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, response_json TEXT NOT NULL,
   PRIMARY KEY(scope, key));
+CREATE TABLE IF NOT EXISTS repository_labels(
+  repo_id TEXT NOT NULL, node_id TEXT NOT NULL, label TEXT NOT NULL,
+  PRIMARY KEY(repo_id, node_id));
+CREATE TABLE IF NOT EXISTS repository_label_anchors(
+  repo_id TEXT NOT NULL, node_id TEXT NOT NULL, kind TEXT, fingerprint TEXT, path TEXT, name TEXT,
+  PRIMARY KEY(repo_id, node_id));
+CREATE TABLE IF NOT EXISTS repository_projects(
+  project_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS repository_locations(
+  location_id TEXT PRIMARY KEY, project_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS repository_shelf(
+  location_id TEXT PRIMARY KEY, path TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS repository_progress(
+  repo_id TEXT NOT NULL, node_id TEXT NOT NULL, fingerprint TEXT, PRIMARY KEY(repo_id,node_id));
 CREATE TABLE IF NOT EXISTS seq(name TEXT PRIMARY KEY, value INTEGER NOT NULL);
 """
 
@@ -65,6 +79,11 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        # Preserve label collections created before explicit repository locations existed.
+        self.db.execute("INSERT OR IGNORE INTO repository_projects(project_id,name) "
+                        "SELECT DISTINCT repo_id, 'Saved repository ' || substr(repo_id,1,8) FROM repository_labels")
+        self.db.execute("INSERT OR IGNORE INTO repository_locations(location_id,project_id) "
+                        "SELECT DISTINCT repo_id,repo_id FROM repository_labels")
 
     @property
     def blobs(self) -> Path:

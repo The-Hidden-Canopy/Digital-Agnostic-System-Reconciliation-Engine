@@ -1004,6 +1004,532 @@ async function pollJobs(force) {
   pollTimer = setTimeout(() => pollJobs(), active ? 700 : 4000);
 }
 
+/* ------------------------------------------------------ repository explorer */
+const repoState = { data: null, selected: "repo", level: "beginner", filter: "", labeledOnly: false, zoom: 1, history: [], journey: null,
+  mapScope: "neighborhood", mapGrouping: "file", mapLimit: 100 };
+function svgEl(tag, attrs) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, String(v)));
+  return e;
+}
+async function viewRepository() {
+  begin(); setNav("");
+  const path = h("input", { id: "repo-path", type: "text", required: true, placeholder: "Local directory path", autocomplete: "off" });
+  const result = h("section", { id: "repo-result", "aria-label": "Repository map" });
+  const status = h("p", { role: "status" });
+  const shelf = h("section", { class: "card", "aria-label": "Remembered repositories", hidden: true });
+  let scanTicket = 0;
+  const audience = h("select", { id: "repo-audience", required: true },
+    h("option", { value: "", text: "Choose an option" }),
+    h("option", { value: "adult", text: "I am an adult reviewing this repository" }),
+    h("option", { value: "adult_reviewed", text: "An adult has reviewed this repository for a young learner" }),
+    h("option", { value: "child", text: "Young learner without adult review" }));
+  const rememberButton = h("button", { type: "button", disabled: true, text: "Remember this folder on this device", onclick: async () => {
+    if (audience.value !== "adult" || !repoState.data) return;
+    try {
+      await api("POST", "repository/remember", { body: { repo_id: repoState.data.repo_id, scan_id: repoState.data.scan_id } });
+      status.textContent = "Folder remembered in this local workspace."; await refreshShelf();
+    } catch (err) { status.textContent = err.message; }
+  } });
+  const invalidateScan = () => { scanTicket++; repoState.data = null; repoState.journey = null; rememberButton.disabled = true; put(result); status.textContent = ""; };
+  path.addEventListener("input", invalidateScan);
+  const refreshShelf = async () => {
+    if (audience.value !== "adult") { shelf.hidden = true; put(shelf); return; }
+    try {
+      const data = await api("POST", "repository/shelf", { body: { content_access: "adult" } });
+      if (audience.value !== "adult") return;
+      shelf.hidden = false;
+      put(shelf, h("h2", { text: "Remembered repositories" }),
+        h("p", { class: "muted", text: "Folder paths are stored in this local workspace only when you choose to remember them. Choosing one fills the path; open it to scan again." }),
+        data.items.length ? h("ul", {}, data.items.map(item => h("li", {},
+          h("button", { type: "button", class: "link-button", text: item.name, onclick: () => { invalidateScan(); path.value = item.path; path.focus(); status.textContent = "Folder selected. Choose Open repository to scan it."; } }),
+          h("span", { class: "muted", text: " · " + item.path + " " }),
+          h("button", { type: "button", text: "Forget folder", "aria-label": `Forget folder ${item.name} at ${item.path}`, onclick: async () => {
+            try { await api("POST", "repository/forget", { body: { content_access: "adult", location_id: item.location_id } }); await refreshShelf(); announce("Folder forgotten; labels and review marks were kept."); }
+            catch (err) { announce(err.message); }
+          } })))) : h("p", { text: "No folders remembered yet." }));
+    } catch (err) { if (audience.value === "adult") { shelf.hidden = false; put(shelf, errorBox(err)); } }
+  };
+  audience.addEventListener("change", () => {
+    invalidateScan(); refreshShelf();
+  });
+  const form = h("form", { class: "card", onsubmit: async (event) => {
+    event.preventDefault();
+    if (audience.value === "child") {
+      repoState.data = null; repoState.journey = null; put(result);
+      status.textContent = "Ask an adult to review the repository before opening it together. Independent access is not available yet.";
+      return;
+    }
+    const ticket = ++scanTicket, selectedPath = path.value, access = audience.value;
+    rememberButton.disabled = true; status.textContent = "Reading source.";
+    try {
+      const scanned = await api("POST", "repository/scan", { body: { path: selectedPath, content_access: access } });
+      if (ticket !== scanTicket || audience.value !== access || path.value !== selectedPath) return;
+      repoState.data = scanned;
+      repoState.selected = "repo"; repoState.filter = ""; repoState.labeledOnly = false; repoState.history = []; repoState.zoom = 1; repoState.journey = null; status.textContent = "Repository inspected.";
+      rememberButton.disabled = access !== "adult";
+      const rescan = async () => {
+        const latest = await api("POST", "repository/scan", { body: { path: selectedPath, content_access: access } });
+        if (ticket !== scanTicket || audience.value !== access || path.value !== selectedPath) return;
+        repoState.data = latest; repoState.journey = null; drawRepository(result, rescan);
+      };
+      drawRepository(result, rescan);
+    } catch (err) { if (ticket === scanTicket) { status.textContent = ""; put(result, errorBox(err)); } }
+  } }, h("label", { for: "repo-path", text: "Local repository folder" }), path,
+  h("label", { for: "repo-audience", text: "Who has reviewed this content?" }), audience,
+  h("p", { class: "muted", text: "Repository names, labels and code are not filtered. Adult review is needed before a young learner opens them. This choice is not age verification." }),
+  h("button", { type: "submit", class: "primary", text: "Open repository" }), " ", rememberButton,
+  h("p", { class: "muted", text: "Reads local Python, JavaScript, TypeScript/JSX and C++ source files. Repository code is never executed. Hidden folders, links, and common generated folders are skipped." }), status);
+  put(main, h("h1", { text: "Elucidary" }),
+    h("p", { text: "Your repository learning companion. Explore a project, follow its connections, and give its parts your own names." }), form, shelf, result);
+  repoState.data = null;
+}
+function drawRepository(container, rescan) {
+  const data = repoState.data;
+  const nodes = data.nodes;
+  let selected = nodes.find(n => n.id === repoState.selected) || nodes[0];
+  const previous = h("select", { id: "saved-project" }, (data.saved_projects || []).map(p => h("option", { value: p.id, text: `${p.name} (${p.labels} labels, ${p.progress} review marks)` })));
+  const reconnect = rescan && (data.saved_projects || []).length ? h("form", { class: "notice", onsubmit: async event => {
+    event.preventDefault();
+    try {
+      await api("POST", "repository/reconnect", { body: { location_id: data.location_id, project_id: previous.value, scan_id: data.scan_id } });
+      await rescan(); announce("Saved repository labels connected to this folder.");
+    } catch (err) { announce(err.message); }
+  } }, h("label", { for: "saved-project", text: "Moved this repository? Select its saved labels" }), previous,
+     h("button", { type: "submit", text: "Connect saved labels" }),
+     h("p", { class: "muted", text: "Choose only if this is the same repository. Existing labels in this folder are never merged automatically." })) : null;
+  const search = h("input", { id: "repo-filter", value: repoState.filter, type: "search", placeholder: "Filter by name or path" });
+  const labeledOnly = h("input", { id: "repo-labeled", type: "checkbox", checked: repoState.labeledOnly, onchange: e => { repoState.labeledOnly = e.target.checked; refreshList(); } });
+  const list = h("div", { class: "repo-list", role: "group", "aria-label": "Repository items" });
+  const detail = h("section", { class: "card repo-detail", "aria-label": "Selected item" });
+  const graph = svgEl("svg", { viewBox: "0 0 900 570", role: "img", "aria-label": "Repository connections. Use the item list to navigate by keyboard.", "aria-describedby": "graph-note" });
+  const graphNote = h("p", { id: "graph-note", class: "muted", "aria-live": "polite" });
+  const overview = h("section", { class: "card", "aria-label": "Repository overview" });
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+  const visibility = { static: true, inferred: true };
+  const showStatic = h("input", { type: "checkbox", checked: true, onchange: event => { visibility.static = event.target.checked; redrawGraph(); } });
+  const showInferred = h("input", { type: "checkbox", checked: true, onchange: event => { visibility.inferred = event.target.checked; redrawGraph(); } });
+  const scope = h("select", { id: "map-scope", onchange: e => { repoState.mapScope = e.target.value; redrawGraph(); } },
+    h("option", { value: "neighborhood", selected: repoState.mapScope === "neighborhood", text: "Around selected item" }),
+    h("option", { value: "overview", selected: repoState.mapScope === "overview", text: "Repository overview" }));
+  const grouping = h("select", { id: "map-grouping", onchange: e => { repoState.mapGrouping = e.target.value; redrawGraph(); } },
+    h("option", { value: "file", selected: repoState.mapGrouping === "file", text: "Group by source file" }),
+    h("option", { value: "kind", selected: repoState.mapGrouping === "kind", text: "Group by item type" }),
+    h("option", { value: "none", selected: repoState.mapGrouping === "none", text: "Ungrouped" }));
+  const density = h("select", { id: "map-density", onchange: e => { repoState.mapLimit = Number(e.target.value); redrawGraph(); } },
+    [40, 100, 180].map(n => h("option", { value: String(n), selected: repoState.mapLimit === n, text: `Up to ${n} items` })));
+  const graphView = () => {
+    const width = 900 / repoState.zoom, height = 570 / repoState.zoom;
+    graph.setAttribute("viewBox", `${450 - width / 2} ${285 - height / 2} ${width} ${height}`);
+  };
+  const redrawGraph = () => {
+    const visibleEdges = data.edges.filter(e => visibility[e.evidence] !== false);
+    const route = repoState.journey?.status === "ready" ? repoState.journey.steps : [];
+    const routeIds = new Set(route.map(step => step.node_id));
+    const routeEdges = new Set(route.filter(step => step.via).map(step => JSON.stringify([step.via.source, step.via.target, step.via.kind, step.via.path, step.via.line])));
+    const shown = ElucidaryLayout.choose(nodes, visibleEdges, selected.id, [...routeIds], repoState.mapLimit, repoState.mapScope);
+    const { positions, captions } = ElucidaryLayout.arrange(shown, repoState.mapGrouping);
+    graph.replaceChildren();
+    visibleEdges.forEach(edge => {
+      const a = positions.get(edge.source), b = positions.get(edge.target);
+      const onRoute = routeEdges.has(JSON.stringify([edge.source, edge.target, edge.kind, edge.path || null, edge.line || null]));
+      if (a && b) graph.append(svgEl("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], class: "repo-edge" + (edge.evidence === "inferred" ? " inferred" : "") + (onRoute ? " journey" : "") }));
+    });
+    captions.forEach(c => {
+      const text = svgEl("text", { x: c.x, y: c.y, class: "repo-cluster-caption", "text-anchor": "middle", "aria-hidden": "true" });
+      text.textContent = c.key.length > 32 ? c.key.slice(0, 29) + "…" : c.key;
+      const title = svgEl("title", {}); title.textContent = c.key; text.append(title); graph.append(text);
+    });
+    shown.forEach(n => {
+      const [x,y] = positions.get(n.id);
+      const circle = svgEl("circle", { cx: x, cy: y, r: n.id === selected.id ? 11 : 6, class: "repo-star " + n.kind + (routeIds.has(n.id) ? " journey" : "") + (n.id === selected.id ? " selected" : "") });
+      const title = svgEl("title", {}); title.textContent = n.label || n.name; circle.append(title);
+      circle.addEventListener("click", () => select(n.id)); graph.append(circle);
+    });
+    ElucidaryLayout.labels(shown, positions, selected.id, [...routeIds]).forEach(label => {
+      const text = svgEl("text", { x: label.x, y: label.y, class: "repo-star-label", "aria-hidden": "true" });
+      text.textContent = label.text;
+      const title = svgEl("title", {}); title.textContent = label.full; text.append(title); graph.append(text);
+    });
+    const hiddenRoute = data.edges.some(edge => visibility[edge.evidence] === false && routeEdges.has(JSON.stringify([edge.source, edge.target, edge.kind, edge.path || null, edge.line || null])));
+    graphNote.textContent = `Showing ${shown.length} of ${nodes.length} scanned items ${repoState.mapScope === "overview" ? "in a sampled repository overview" : "around " + (selected.label || selected.name)}; the selected item and guided path stay visible. Some visual labels are abbreviated or hidden to avoid overlap. The item list includes all scanned items. Grouping is visual and does not assert a relationship.${hiddenRoute ? " Some path links are hidden by the map filters." : ""}`;
+    graphView();
+  };
+  const refreshList = () => {
+    const q = repoState.filter.toLowerCase();
+    const filtered = nodes.filter(n => (!repoState.labeledOnly || n.label) && [n.name,n.path,n.label,n.kind].some(v => (v || "").toLowerCase().includes(q)));
+    put(list, filtered.map(n => h("button", { type: "button", class: "repo-item", "aria-pressed": n.id === selected.id,
+      onclick: () => select(n.id) }, h("span", { class: "repo-kind", text: n.kind }), h("span", { text: n.label || n.name }))));
+    if (!filtered.length) put(list, h("p", { text: "No matching items." }));
+  };
+  const select = (id, remember = true) => {
+    const next = nodeById.get(id) || nodes[0];
+    if (remember && next.id !== selected.id) repoState.history.push(selected.id);
+    selected = next; repoState.selected = selected.id;
+    refreshList(); redrawGraph(); showDetail(); renderOverview(); list.querySelector('[aria-pressed="true"]')?.focus();
+  };
+  const renderOverview = () => {
+    const expanded = Boolean(overview.querySelector("details")?.open);
+    const files = nodes.filter(n => n.kind === "file"), counts = new Map(files.map(n => [n.path, { functions: 0, dependencies: 0, calls: 0, labels: 0 }]));
+    nodes.forEach(n => {
+      const c = counts.get(n.path); if (!c) return;
+      if (n.kind === "function") c.functions++;
+      if (n.kind === "dependency") c.dependencies++;
+      if (n.kind === "callsite") c.calls++;
+      if (n.label) c.labels++;
+    });
+    const staticCount = data.edges.filter(e => e.evidence === "static").length;
+    const inferredCount = data.edges.filter(e => e.evidence === "inferred").length;
+    put(overview, h("h2", { text: "Repository overview" }),
+      h("p", { text: `${data.files_inspected} source files inspected; ${nodes.filter(n => n.kind === "function").length} recorded functions, ${nodes.filter(n => n.kind === "dependency").length} dependency items, ${nodes.filter(n => n.kind === "callsite").length} mapped written calls, and ${nodes.filter(n => n.label).length} labeled items.` }),
+      h("p", { class: "muted", text: `${staticCount} static links and ${inferredCount} inferred links in this bounded scan. Counts can be incomplete; no runtime calls were observed.` }),
+      h("details", { open: expanded }, h("summary", { text: `Browse ${files.length} scanned files` }),
+        h("ul", { "aria-label": "Scanned files" }, files.map(n => { const c = counts.get(n.path); return h("li", {},
+          h("button", { type: "button", class: "link-button", "aria-current": n.id === selected.id ? "true" : null, text: n.label || n.path, onclick: () => select(n.id) }),
+          ` · ${c.functions} functions, ${c.dependencies} dependencies, ${c.calls} mapped calls, ${c.labels} labels`); }))));
+  };
+  const renderCallSites = (sites, ownerId) => sites && sites.length ? h("ul", { "aria-label": "Written call sites" }, sites.map((call, callIndex) => {
+    const target = call.target_id && nodeById.get(call.target_id);
+    const site = call.map_node_id && nodeById.get(call.map_node_id);
+    const comparison = h("div", { "aria-live": "polite" });
+    const compareButton = target ? h("button", { type: "button", text: "Compare call and possible target", onclick: async () => {
+      compareButton.disabled = true; put(comparison, h("p", { text: "Comparing source evidence…" }));
+      try {
+        const result = await api("POST", "repository/compare-call", { body: { repo_id: data.repo_id, node_id: ownerId,
+          call_index: callIndex, level: repoState.level, scan_id: data.scan_id } });
+        if (repoState.data !== data) return;
+        const c = result.call, t = result.target;
+        put(comparison, h("section", { class: "notice", "aria-label": "Call and possible target comparison" },
+          h("h4", { text: "Compare the source" }), h("p", { text: result.prompt }),
+          h("p", { text: `Written call (static): ${c.path}:${c.line}${c.written_arguments == null ? "" : ` · ${c.written_arguments} argument expressions recorded`}` }),
+          h("pre", { class: "repo-source", text: (c.snippet || "") + (c.snippet_truncated ? "\n[Source line shortened]" : "") }),
+          c.sha256 ? h("p", { class: "muted", text: "Call file SHA-256: " + c.sha256 }) : null,
+          h("p", { text: `Possible target (inferred): ${t.path}:${t.line}` }),
+          t.definition.map(line => h("pre", { class: "repo-source", text: `${line.line}: ${line.text}${line.truncated ? " [line shortened]" : ""}` })),
+          !t.definition.length ? h("p", { class: "muted", text: "No definition excerpt was captured in this scan." }) : null,
+          t.sha256 ? h("p", { class: "muted", text: "Target file SHA-256: " + t.sha256 }) : null,
+          t.definition_truncated ? h("p", { class: "muted", text: "Only a bounded part of the definition is shown." }) : null,
+          h("p", { text: t.parameters === null ? "Parameter details were not extracted." : t.parameters.length ?
+            "Recorded parameter names or patterns: " + t.parameters.map(p => p.name).join(", ") + (t.parameters_truncated ? " (list truncated)" : "") : "No parameters were recorded in this definition." }),
+          result.relationship.basis ? h("p", { class: "muted", text: result.relationship.basis }) : null,
+          h("p", { class: "muted", text: result.limitation })));
+      } catch (err) { put(comparison, errorBox(err)); }
+      finally { compareButton.disabled = false; }
+    } }) : null;
+    return h("li", {}, h("strong", { text: call.written + (call.written_truncated ? " [callee truncated]" : "") }), ` · ${call.path}:${call.line} · written call (static)`,
+      call.written_arguments == null ? "" : ` · ${call.written_arguments} argument expression${call.written_arguments === 1 ? "" : "s"} written`,
+      site ? [" ", h("button", { type: "button", class: "link-button", "aria-label": `Open written call ${call.written} at ${call.path}:${call.line} in the web`, text: "Open in web", onclick: () => select(site.id) })] : null,
+      target ? [" · possible target (inferred): ", h("button", { type: "button", class: "link-button", text: target.label || target.name, onclick: () => select(target.id) })] : " · target unresolved",
+      call.basis ? h("p", { class: "muted", text: call.basis }) : null,
+      compareButton, comparison,
+      h("details", {}, h("summary", { text: "Show call-site source" }), h("pre", { class: "repo-source", text: call.snippet + (call.snippet_truncated ? "\n[Source line excerpt truncated]" : "") }),
+        h("p", { class: "muted", text: "Source SHA-256: " + call.sha256 })));
+  })) : null;
+  const renderEvidenceGuide = result => h("section", { "aria-label": "Local evidence guide" },
+    h("p", { class: "muted", text: `${result.provider.name} · runs locally; no source is sent to a model service.${result.provider.fallback ? " Evidence prompts are temporarily unavailable." : ""}` }),
+    result.evidence_cards.length ? h("ol", {}, result.evidence_cards.map(card => {
+      const c = card.citation;
+      return h("li", {}, h("p", { text: card.prompt }),
+        h("p", { class: "muted", text: `${c.path}:${c.line} · ${c.evidence}${c.resolution ? " · target " + c.resolution : ""}${c.sha256 ? " · SHA-256 " + c.sha256 : ""}` }),
+        h("pre", { class: "repo-source", text: c.text + (c.truncated ? "\n[Source excerpt truncated]" : "") }),
+        c.basis ? h("p", { class: "muted", text: c.basis }) : null);
+    })) : h("p", { class: "muted", text: "No source excerpt is available for a reading prompt at this step." }));
+  const renderAssistant = result => !result.assistant ? null : result.assistant.status !== "ready" ?
+    h("p", { class: "notice", text: "The isolated local model was unavailable or did not return usable citations. The local evidence guide is still available." }) :
+    h("section", { class: "notice", "aria-label": "Local model interpretation" },
+      h("h4", { text: "Local model interpretation" }), h("p", { text: result.assistant.text }),
+      h("p", { class: "muted", text: result.assistant.limitation }),
+      h("ol", {}, result.assistant.citations.map(c => h("li", {},
+        h("p", { text: `[${c.id}] ${c.path}:${c.line} · ${c.evidence}${c.sha256 ? " · SHA-256 " + c.sha256 : ""}` }),
+        h("pre", { class: "repo-source", text: c.text + (c.truncated ? "\n[Source excerpt truncated]" : "") })))));
+  const showDetail = () => {
+    const nearby = data.edges.filter(e => e.source === selected.id || e.target === selected.id);
+    const possible = nearby.find(e => e.source === selected.id && e.kind === "possible call");
+    const defined = nearby.find(e => e.target === selected.id && e.kind === "defines");
+    const writtenCall = nearby.find(e => e.target === selected.id && e.kind === "contains written call");
+    const imported = nearby.find(e => e.target === selected.id && (e.kind === "imports" || e.kind === "includes"));
+    const activity = possible ? "call" : writtenCall ? "callsite" : defined ? "definition" : imported ? "import" : null;
+    const activityEdge = possible || writtenCall || defined || imported;
+    const recoverable = (data.unmatched_labels || []).filter(x => !selected.label && (!x.kind || x.kind === selected.kind));
+    const recoverChoice = h("select", { id: "recover-label" },
+      recoverable.map(x => h("option", { value: x.node_id, text: `${x.label} — previously ${x.path || x.node_id}${x.suggested_node_id === selected.id ? " (matching content)" : ""}` })));
+    const recoverForm = recoverable.length ? h("form", { onsubmit: async event => {
+      event.preventDefault();
+      try {
+        const target = selected, old = recoverChoice.value;
+        const r = await api("POST", "repository/rebind-label", { body: { repo_id: data.repo_id, old_node_id: old, new_node_id: target.id, scan_id: data.scan_id } });
+        target.label = r.label; data.unmatched_labels = data.unmatched_labels.filter(x => x.node_id !== old); repoState.journey = null;
+        announce("Label attached to the selected item."); drawRepository(container, rescan); container.querySelector("#repo-label")?.focus();
+      } catch (err) { announce(err.message); }
+    } }, h("label", { for: "recover-label", text: "Attach a saved unmatched label" }), recoverChoice,
+      h("button", { type: "submit", text: "Attach label here" })) : null;
+    const outward = nearby.find(e => e.source === selected.id && nodes.some(n => n.id === e.target));
+    const inward = nearby.find(e => e.target === selected.id && nodes.some(n => n.id === e.source));
+    const nextEdge = outward || inward;
+    const nextNode = nextEdge && nodes.find(n => n.id === (nextEdge.source === selected.id ? nextEdge.target : nextEdge.source));
+    const trail = h("section", { class: "notice", "aria-label": "Learning path" },
+      h("h3", { text: "Explore this part" }),
+      h("ol", {},
+        h("li", { text: selected.path ? `Find it in ${selected.path}${selected.line ? ":" + selected.line : ""}. The excerpt is a snapshot from this scan.` : "Start with a file in this repository." }),
+        h("li", {}, nextNode ? ["Follow ", h("button", { type: "button", class: "link-button", text: nextNode.label || nextNode.name, onclick: () => select(nextNode.id) }), ` via ${nextEdge.kind} (${nextEdge.evidence}).`] : "No connection was found in this scan."),
+        h("li", { text: activity ? "Try the question below to check what the evidence actually shows." : "Choose a function or import for a question about the evidence." })));
+    const practiceStatus = h("p", { role: "status" });
+    const answerPractice = async answer => {
+      try {
+        const grade = await api("POST", "repository/practice", { body: { repo_id: data.repo_id, node_id: selected.id, answer, activity, scan_id: data.scan_id } });
+        practiceStatus.textContent = (grade.correct ? "Correct. " : "Not established. ") + grade.explanation + ` Source: ${grade.evidence.path}:${grade.evidence.line}.`;
+      } catch (err) { practiceStatus.textContent = err.message; }
+    };
+    const practice = activity ? h("section", { class: "notice", "aria-label": "Check your understanding" },
+      h("h3", { text: "Check your understanding" }),
+      h("p", { text: `At ${activityEdge.path}:${activityEdge.line}, which statement is supported by the source?` }),
+      h("button", { type: "button", text: activity === "call" ? "A call may happen" : activity === "definition" ? "A function is defined" : activity === "callsite" ? "A call is written" : "An import or include is written", onclick: () => answerPractice("source") }),
+      h("button", { type: "button", text: "This definitely ran", onclick: () => answerPractice("ran") }),
+      practiceStatus) : null;
+    const explanationTopic = h("select", { id: "explain-topic" },
+      h("option", { value: "overview", text: "What is this part?" }),
+      h("option", { value: "inputs", text: "What inputs are written?" }),
+      h("option", { value: "returns", text: "Where are returns written?" }),
+      h("option", { value: "structure", text: "Where does code choose or repeat?" }),
+      h("option", { value: "calls", text: "What calls are written?" }),
+      h("option", { value: "connections", text: "How is it connected?" }));
+    const explanationOutput = h("div", { "aria-live": "polite" });
+    const useAssistant = h("input", { id: "use-local-assistant", type: "checkbox" });
+    const explanation = h("form", { onsubmit: async event => {
+      event.preventDefault();
+      try {
+        const target = selected.id;
+        const result = await api("POST", "repository/explain", { body: { repo_id: data.repo_id, node_id: target,
+          topic: explanationTopic.value, level: repoState.level, scan_id: data.scan_id, use_local_assistant: useAssistant.checked } });
+        if (selected.id !== target || repoState.data !== data) { announce("Selection changed; request the explanation again."); return; }
+        put(explanationOutput, result.facts.map(text => h("p", { text })), renderEvidenceGuide(result), renderAssistant(result),
+          result.source.path ? h("p", { class: "muted", text: `Source: ${result.source.path}${result.source.line ? ":" + result.source.line : ""}${result.source.sha256 ? " · SHA-256 " + result.source.sha256 : ""}` }) : null,
+          result.citations.length ? h("details", {}, h("summary", { text: "Show the cited source lines" }),
+            result.citations.map(c => h("pre", { class: "repo-source", text: `${c.line}: ${c.text}${c.truncated ? " [line excerpt truncated]" : ""}` }))) : null,
+          renderCallSites(result.call_sites, target),
+          result.connections.length ? h("ul", {}, result.connections.map(link => {
+            const other = nodeById.get(link.node_id);
+            return h("li", {}, `${link.direction}: ${link.kind} (${link.evidence}) `,
+              other ? h("button", { type: "button", class: "link-button", text: other.label || other.name, onclick: () => select(other.id) }) : "unavailable",
+              link.path ? ` · ${link.path}:${link.line}` : "", link.basis ? ` · ${link.basis}` : "",
+              link.sha256 ? h("span", { class: "muted", text: ` · Source SHA-256: ${link.sha256}` }) : null,
+              link.snippet ? h("details", {}, h("summary", { text: "Show connection source" }), h("pre", { class: "repo-source", text: link.snippet + (link.snippet_truncated ? "\n[Source line excerpt truncated]" : "") })) : null);
+          })) : null, h("p", { class: "muted", text: result.limitation }));
+      } catch (err) { put(explanationOutput, errorBox(err)); }
+    } }, h("h3", { text: "Ask about this part" }), h("label", { for: "explain-topic", text: "Choose a question" }), explanationTopic,
+      data.local_assistant_available ? [h("label", { class: "inline", for: "use-local-assistant" }, useAssistant, "Also ask the configured local model"),
+        h("p", { class: "muted", text: "This sends the displayed source excerpts to the configured isolated local model. Its interpretation may be wrong; check the citations. Adult sessions only." })] : null,
+      h("button", { type: "submit", text: "Show explanation" }), explanationOutput);
+    const progressStatus = h("p", { role: "status" });
+    const progress = h("section", { "aria-label": "Review mark" }, h("h3", { text: "Your review mark" }),
+      h("p", { text: selected.reviewed ? (selected.review_needs_refresh ? "Marked reviewed, but the scanned source file or repository inventory has changed since then." : "You marked this item reviewed.") : "You have not marked this item reviewed." }),
+      h("button", { type: "button", text: selected.reviewed && !selected.review_needs_refresh ? "Remove review mark" : "Mark reviewed", onclick: async () => {
+        const target = selected, reviewed = !(target.reviewed && !target.review_needs_refresh);
+        try {
+          await api("POST", "repository/progress", { body: { repo_id: data.repo_id, node_id: target.id, reviewed, scan_id: data.scan_id } });
+          target.reviewed = reviewed; target.review_needs_refresh = false; showDetail(); announce(reviewed ? "Marked reviewed locally." : "Review mark removed.");
+        } catch (err) { progressStatus.textContent = err.message; }
+      } }), h("p", { class: "muted", text: "Optional and stored in this local workspace. This is your mark, not a test score or proof of learning." }), progressStatus);
+    const label = h("input", { id: "repo-label", value: selected.label || "", maxLength: 120 });
+    const labelStatus = h("span", { role: "status" });
+    const labelForm = h("form", { onsubmit: async event => {
+      event.preventDefault();
+      try {
+        const target = selected;
+        const r = await api("POST", "repository/label", { body: { repo_id: data.repo_id, node_id: target.id, label: label.value, scan_id: data.scan_id } });
+        target.label = r.label; target.label_needs_review = false; labelStatus.textContent = "Saved locally.";
+        if (repoState.journey?.goal === "label") repoState.journey = null;
+        refreshList(); refreshDestinations(); redrawGraph(); renderOverview(); renderGuided();
+      } catch (err) { labelStatus.textContent = err.message; }
+    } }, h("label", { for: "repo-label", text: "Your label" }), label,
+      h("button", { type: "submit", text: "Save label" }), labelStatus);
+    const meaning = selected.kind === "repository" ? "A repository is a folder that holds a project's code." :
+      selected.kind === "file" ? "A file groups instructions and definitions together." :
+      selected.kind === "function" ? "A function is a named set of instructions that other code may use." :
+      selected.kind === "callsite" ? "This is a call written in source; its target may be unknown and it may not have run." :
+      "An import or include references another module or file; it does not prove that it was installed or ran.";
+    const advanced = selected.kind === "function" ? "This definition was parsed from source. Calls are possible targets inferred from matching names and may be wrong or incomplete." :
+      "This item was found in source; the map does not establish runtime behavior.";
+    const containingFile = selected.kind !== "file" && selected.path ? nodeById.get("file:" + selected.path) : null;
+    const lastPreviewLine = selected.source_preview?.at(-1)?.line || 0;
+    const outsidePreview = selected.kind === "file" ? nodes.filter(n => n.id !== selected.id && n.path === selected.path && n.line > lastPreviewLine) : [];
+    const sourceView = selected.kind === "file" ? h("details", { "aria-label": "File source and graph items" },
+      h("summary", { text: "Read source and open graph items" }),
+      h("p", { class: "muted", text: "These are bounded lines from the scan snapshot. Buttons mark items recorded on the same line; source may have changed since scanning." }),
+      selected.source_preview_truncated ? h("p", { class: "notice", text: "This preview omits lines or shortens long lines. The full file is not shown." }) : null,
+      selected.source_preview?.length ? h("ol", { class: "repo-code-lines", "aria-label": "Source lines" }, selected.source_preview.map(line => {
+        const matches = nodes.filter(n => n.id !== selected.id && n.path === selected.path && n.line === line.line);
+        return h("li", {}, h("span", { class: "repo-code-number", text: String(line.line) }),
+          h("code", { text: line.text + (line.truncated ? " [line shortened]" : "") }),
+          matches.map(n => h("button", { type: "button", class: "link-button", text: `Open ${n.kind}: ${n.label || n.name}`, onclick: () => select(n.id) })));
+      })) : h("p", { text: "No source lines are available in this preview." }),
+      outsidePreview.length ? h("details", {}, h("summary", { text: `${outsidePreview.length} graph items beyond the preview` }),
+        h("ul", {}, outsidePreview.map(n => h("li", {}, h("button", { type: "button", class: "link-button",
+          text: `${n.kind}: ${n.label || n.name} · line ${n.line}`, onclick: () => select(n.id) }))))) : null) : null;
+    put(detail, h("h2", { text: selected.label || selected.name }),
+      badge(selected.kind + " · static source", "b-info"),
+      h("p", { text: repoState.level === "beginner" ? meaning : repoState.level === "explore" ? `${meaning} Start with the source below, then follow a connection and check what it can tell you.` : advanced }),
+      selected.path ? h("p", {}, h("strong", { text: "Source: " }), `${selected.path}${selected.line ? ":" + selected.line : ""}`) : null,
+      selected.sha256 ? h("p", { class: "muted", text: "File SHA-256: " + selected.sha256 }) : null,
+      selected.snippet ? h("details", {}, h("summary", { text: `Source excerpt starting at line ${selected.line}` }), h("pre", { class: "repo-source", text: selected.snippet + (selected.snippet_truncated ? "\n[Source line excerpt truncated]" : "") })) : null,
+      containingFile ? h("button", { type: "button", text: "Open containing file in the map", onclick: () => select(containingFile.id) }) : null,
+      sourceView,
+      selected.label_needs_review ? h("p", { class: "notice", text: "The labeled source has changed since this label was saved. Check that the label still fits." }) : null,
+      labelForm, recoverForm, trail, explanation, practice, progress, h("h3", { text: "Connections" }),
+      nearby.length ? h("ul", {}, nearby.map(e => {
+        const other = nodes.find(n => n.id === (e.source === selected.id ? e.target : e.source));
+        return h("li", {}, `${e.source === selected.id ? "→" : "←"} ${e.kind} (${e.evidence}) `,
+          other ? h("button", { type: "button", class: "link-button", text: other.label || other.name, onclick: () => select(other.id) }) : "unavailable",
+          e.line ? ` · ${e.path}:${e.line}` : "",
+          e.basis ? h("span", { class: "muted", text: ` — ${e.basis}` }) : null,
+          e.snippet ? h("details", {}, h("summary", { text: "Show source for this connection" }), h("pre", { class: "repo-source", text: e.snippet + (e.snippet_truncated ? "\n[Source line excerpt truncated]" : "") })) : null);
+      })) : h("p", { text: "No connections found within this scan." }));
+  };
+  search.addEventListener("input", () => { repoState.filter = search.value; refreshList(); });
+  const guidedOutput = h("div", { role: "region", "aria-label": "Guided path steps", "aria-live": "polite" });
+  const goal = h("select", { id: "learning-goal" },
+    h("option", { value: "understand", text: "Understand a function" }),
+    h("option", { value: "calls", text: "Explore calls and possible targets" }),
+    h("option", { value: "dependencies", text: "Explore a dependency" }));
+  const prefer = h("input", { id: "prefer-unreviewed", type: "checkbox" });
+  const destination = h("select", { id: "label-destination", required: true });
+  const includeInferred = h("input", { id: "route-inferred", type: "checkbox" });
+  const includeOrganization = h("input", { id: "route-organization", type: "checkbox", checked: true });
+  const routeButton = h("button", { type: "submit", text: "Find a path to this label" });
+  const refreshDestinations = () => {
+    const old = destination.value, labeled = nodes.filter(n => n.label);
+    put(destination, h("option", { value: "", text: labeled.length ? "Choose a saved label" : "No labels saved in this scan" }),
+      labeled.map(n => h("option", { value: n.id, text: `${n.label} — ${n.kind}${n.path ? " · " + n.path : ""}${n.line ? ":" + n.line : ""}${n.label_needs_review ? " (check changed source)" : ""}` })));
+    if (labeled.some(n => n.id === old)) destination.value = old;
+    destination.disabled = routeButton.disabled = !labeled.length;
+  };
+  refreshDestinations();
+  const hintText = { overview: "Use the file and line shown here. This is a snapshot of source, not proof of execution.",
+    inputs: "Look for parameter names in the cited definition. The scan does not know values passed at runtime.",
+    returns: "Look for explicit return statements in the cited lines. A listed branch may never run.",
+    structure: "Find the cited choice or loop in the source; a written construct might not run.",
+    calls: "Read each written call. An unresolved target means the scan cannot identify where it leads.",
+    connections: "Check the edge label: static means it is written in source; inferred means it is a possible match." };
+  const renderGuided = () => {
+    const plan = repoState.journey;
+    if (!plan) { put(guidedOutput, h("p", { class: "muted", text: "Choose a goal to begin from the selected item." })); return; }
+    if (plan.status !== "ready") { put(guidedOutput, h("p", { text: plan.message }), h("p", { class: "muted", text: plan.limitation })); return; }
+    const step = plan.steps[plan.index], target = nodeById.get(step.node_id), view = step.explanation;
+    const modelOutput = h("div", { "aria-live": "polite" });
+    const modelButton = data.local_assistant_available ? h("button", { type: "button", text: "Ask local model about this step", onclick: async () => {
+      modelButton.disabled = true;
+      put(modelOutput, h("p", { text: "Asking the isolated local model…" }));
+      try {
+        const result = await api("POST", "repository/explain", { body: { repo_id: data.repo_id, node_id: step.node_id,
+          topic: step.topic, level: repoState.level, scan_id: data.scan_id, use_local_assistant: true } });
+        if (repoState.journey !== plan || plan.steps[plan.index] !== step) return;
+        put(modelOutput, renderAssistant(result));
+      } catch (err) { put(modelOutput, errorBox(err)); }
+      finally { modelButton.disabled = false; }
+    } }) : null;
+    const navigate = index => {
+      plan.index = index; plan.hint = false; select(plan.steps[index].node_id); renderGuided();
+      guidedOutput.querySelector("h3")?.focus();
+    };
+    put(guidedOutput, h("p", { text: plan.message }), h("p", { class: "muted", text: plan.limitation }),
+      h("ol", { "aria-label": "Steps in the guided path" }, plan.steps.map((item, index) => {
+        const n = nodeById.get(item.node_id);
+        return h("li", {}, h("button", { type: "button", class: "link-button", "aria-current": index === plan.index ? "step" : null,
+          text: `${n?.label || n?.name || "Item"}: ${item.topic}`, onclick: () => navigate(index) }));
+      })),
+      h("h3", { tabIndex: -1, text: `Step ${plan.index + 1} of ${plan.steps.length}: ${target?.label || target?.name || "Item"}` }),
+      h("p", { text: step.prompt }),
+      step.via ? h("p", {}, badge(`${step.via.direction === "reverse" ? "reverse of " : ""}${step.via.kind} · ${step.via.evidence}`, step.via.evidence === "inferred" ? "b-warn" : "b-info"),
+        step.via.path ? ` · ${step.via.path}:${step.via.line}` : "", step.via.basis ? ` · ${step.via.basis}` : "",
+        step.via.sha256 ? ` · Source SHA-256: ${step.via.sha256}` : "") : null,
+      step.via?.snippet ? h("details", {}, h("summary", { text: "Show connection source" }), h("pre", { class: "repo-source", text: step.via.snippet + (step.via.snippet_truncated ? "\n[Source line excerpt truncated]" : "") })) : null,
+      view.facts.map(text => h("p", { text })), renderEvidenceGuide(view),
+      modelButton ? [h("p", { class: "muted", text: "This sends this step's source excerpts to the configured isolated local model. Its interpretation may be wrong; check the citations." }), modelButton, modelOutput] : null,
+      view.source.path ? h("p", { class: "muted", text: `Source: ${view.source.path}${view.source.line ? ":" + view.source.line : ""}${view.source.sha256 ? " · SHA-256 " + view.source.sha256 : ""}` }) : null,
+      view.citations.length ? h("details", {}, h("summary", { text: "Show cited source lines" }),
+        view.citations.map(c => h("pre", { class: "repo-source", text: `${c.line}: ${c.text}${c.truncated ? " [line excerpt truncated]" : ""}` }))) : null,
+      renderCallSites(view.call_sites, step.node_id),
+      h("p", { class: "muted", text: view.limitation }),
+      plan.hint ? h("p", { class: "notice", text: hintText[step.topic] }) : null,
+      h("div", { class: "row" },
+        h("button", { type: "button", text: "Previous step", disabled: plan.index === 0, onclick: () => navigate(plan.index - 1) }),
+        h("button", { id: "path-hint", type: "button", text: plan.hint ? "Hide hint" : "Need a hint?", onclick: () => { plan.hint = !plan.hint; renderGuided(); guidedOutput.querySelector("#path-hint")?.focus(); } }),
+        h("button", { type: "button", text: "Next step", disabled: plan.index === plan.steps.length - 1, onclick: () => navigate(plan.index + 1) })));
+  };
+  const guided = h("section", { class: "card", "aria-label": "Guided exploration" }, h("h2", { text: "Guided exploration" }),
+    h("p", { text: "Start from the selected item. Choose a goal and move at your own pace; no answers or learner profile are saved." }),
+    h("p", { class: "muted", text: "Highlighted lines show the guided path. Dashed highlighted lines are inferred connections." }),
+    h("form", { onsubmit: async event => {
+      event.preventDefault();
+      const origin = selected.id;
+      try {
+        const path = await api("POST", "repository/guided-path", { body: { repo_id: data.repo_id, node_id: origin, goal: goal.value,
+          level: repoState.level, prefer_unreviewed: prefer.checked, scan_id: data.scan_id } });
+        if (selected.id !== origin || repoState.data !== data) { announce("Selection changed. Choose the goal again."); return; }
+        repoState.journey = { ...path, index: 0, hint: false }; redrawGraph(); renderGuided();
+      } catch (err) { put(guidedOutput, errorBox(err)); }
+    } }, h("label", { for: "learning-goal", text: "What would you like to explore?" }), goal,
+    h("label", { class: "inline", for: "prefer-unreviewed" }, prefer, "Prefer unreviewed items among equally near suggestions"),
+    h("button", { type: "submit", text: "Build a path" })),
+    h("form", { onsubmit: async event => {
+      event.preventDefault();
+      const origin = selected.id, target = destination.value;
+      try {
+        const path = await api("POST", "repository/label-path", { body: { repo_id: data.repo_id, node_id: origin, target_id: target,
+          level: repoState.level, include_inferred: includeInferred.checked, include_organization: includeOrganization.checked, scan_id: data.scan_id } });
+        if (selected.id !== origin || repoState.data !== data) { announce("Selection changed. Choose the label again."); return; }
+        repoState.journey = { ...path, index: 0, hint: false }; redrawGraph(); renderGuided();
+      } catch (err) { put(guidedOutput, errorBox(err)); }
+    } }, h("h3", { text: "Explore a saved label" }),
+      h("p", { class: "muted", text: "Find a path of up to eight links from the selected item. The path can move backwards across a link; that does not reverse what the source says." }),
+      h("label", { for: "label-destination", text: "Destination" }), destination,
+      h("label", { class: "inline", for: "route-inferred" }, includeInferred, "Include possible inferred connections"),
+      h("label", { class: "inline", for: "route-organization" }, includeOrganization, "Include file and definition organization links"),
+      routeButton), guidedOutput);
+  const level = h("select", { id: "repo-level", onchange: e => { repoState.level = e.target.value; repoState.journey = null; redrawGraph(); renderGuided(); showDetail(); announce("Explanation level changed; choose a goal to build a new path."); } },
+    h("option", { value: "beginner", selected: repoState.level === "beginner", text: "Getting started" }),
+    h("option", { value: "explore", selected: repoState.level === "explore", text: "Explore together" }),
+    h("option", { value: "technical", selected: repoState.level === "technical", text: "Technical" }));
+  put(container, reconnect, h("div", { class: "notice" }, h("strong", { text: "Reading the map: " }),
+    "Solid lines show definitions, containment, written calls, imports and includes. Dashed lines are possible local modules or calls inferred from source. No runtime calls have been observed."),
+    data.parser_isolation === "portable" ? h("p", { class: "notice", text: "Portable development mode: source parsing is not protected by the required Linux sandbox." }) : null,
+    h("p", { class: "muted", text: "Source code is unreviewed content and may be unsuitable for children. Adult review is needed before sharing it with a child." }),
+    data.unmatched_progress_count ? h("p", { class: "notice", text: `${data.unmatched_progress_count} review marks refer to items not present in this scan; they remain stored locally.` }) : null,
+    h("section", { class: "card", "aria-label": "Local review marks" }, h("h2", { text: "Local review marks" }),
+      h("p", { text: "Review marks are optional, shared by people using this workspace, and do not record answers or learner profiles." }),
+      h("button", { type: "button", text: "Clear review marks for this repository", onclick: async () => {
+        if (!window.confirm("Clear all review marks for this repository? Labels will be kept.")) return;
+        try {
+          await api("POST", "repository/clear-progress", { body: { repo_id: data.repo_id, scan_id: data.scan_id } });
+          nodes.forEach(n => { n.reviewed = false; n.review_needs_refresh = false; }); data.unmatched_progress_count = 0;
+          drawRepository(container, rescan); announce("Review marks cleared.");
+        } catch (err) { announce(err.message); }
+      } })),
+    (data.unmatched_labels || []).length ? h("div", { class: "notice" }, h("strong", { text: "Saved labels not found in this scan" }),
+      h("p", { text: "Files may have moved, changed, or been skipped by scan limits. Select a current item to attach a label; nothing is moved automatically." }),
+      h("ul", {}, data.unmatched_labels.map(x => h("li", { text: `${x.label} — ${x.path || x.node_id}${x.suggested_node_id ? " (one content match available)" : ""}` })))) : null,
+    data.warnings.length ? h("div", { class: "notice", role: "status" }, h("strong", { text: "Scan limits and omissions" }), h("ul", {}, data.warnings.map(w => h("li", { text: w })))) : null,
+    h("p", { class: "muted", text: `${data.files_inspected} source files inspected · ${nodes.length} items · ${data.edges.length} connections. ${data.scope}` }),
+    overview, h("label", { for: "repo-level", text: "Explanation level" }), level, guided,
+    h("div", { class: "repo-layout" },
+      h("section", { class: "card" }, h("h2", { text: "Cosmic web" }),
+        graphNote, h("div", { class: "row", role: "group", "aria-label": "Map layout" },
+          h("label", { for: "map-scope", text: "Show" }), scope,
+          h("label", { for: "map-grouping", text: "Arrange" }), grouping,
+          h("label", { for: "map-density", text: "Density" }), density),
+        h("div", { class: "row", role: "group", "aria-label": "Visible connection types" },
+          h("label", { class: "inline" }, showStatic, "Show static links"),
+          h("label", { class: "inline" }, showInferred, "Show inferred links")),
+        h("div", { class: "row", "aria-label": "Map controls" },
+          h("button", { type: "button", text: "Zoom in", onclick: () => { repoState.zoom = Math.min(3, repoState.zoom * 1.25); graphView(); } }),
+          h("button", { type: "button", text: "Zoom out", onclick: () => { repoState.zoom = Math.max(0.7, repoState.zoom / 1.25); graphView(); } }),
+          h("button", { type: "button", text: "Reset zoom", onclick: () => { repoState.zoom = 1; graphView(); } }),
+          h("button", { type: "button", text: "Back along trail", onclick: () => { const id = repoState.history.pop(); if (id) select(id, false); else announce("No earlier item in this trail."); } })), graph,
+        h("label", { for: "repo-filter", text: "Find an item" }), search,
+        h("label", { class: "inline", for: "repo-labeled" }, labeledOnly, "Show labeled items only"), list), detail));
+  refreshList(); redrawGraph(); showDetail(); renderOverview(); renderGuided();
+}
+
 /* ------------------------------------------------------------------ router */
 async function render(soft) {
   const hash = location.hash.replace(/^#\/?/, "");
@@ -1022,13 +1548,15 @@ async function render(soft) {
       case "campaign": await viewCampaign(); break;
       case "composition": await viewComposition(dec(route[1])); break;
       case "graph": await viewGraph(); break;
+      case "repository": await viewRepository(); break;
       default: location.hash = "#/import";
     }
   } catch (e) {
     put(main, h("h1", { text: "This screen could not be loaded" }), errorBox(e),
       h("p", {}, h("button", { type: "button", text: "Try again", onclick: () => render(false) })));
   }
-  if (!soft) { document.title = "Verification Workbench"; if (!document.activeElement || document.activeElement === document.body) main.focus({ preventScroll: true }); }
+  document.title = route[0] === "repository" ? "Elucidary | Verification Workbench" : "Verification Workbench";
+  if (!soft && (!document.activeElement || document.activeElement === document.body)) main.focus({ preventScroll: true });
 }
 window.addEventListener("hashchange", () => render(false));
 refreshOverview(); pollJobs(true); render(true); /* initial load keeps focus at the document start so the skip link is the first Tab stop */
