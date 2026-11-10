@@ -201,6 +201,9 @@ class DesktopController:
         self.scan_limits = None  # None: the desktop bounds for the chosen options
 
     def clear(self):
+        if self.data:
+            try: self.service.repository_release(self.data.get("repo_id"), self.data.get("scan_id"))
+            except Exception: pass
         self.data, self.nodes, self.selected, self.audience, self.route, self.index = None, {}, None, None, None, None
 
     def open(self, path, audience, isolation, baseline=None, *, progress=None, should_cancel=None,
@@ -892,7 +895,8 @@ class DesktopApp:
         if compare:
             if not self.controller.data or self.controller.audience != audience or path != getattr(self, "opened_path", ""):
                 self.status.set("Open this folder with the same review choice before comparing scans."); return
-            baseline = (self.controller.data, self.controller.audience)
+            from .repository_changes import baseline_of
+            baseline = (baseline_of(self.controller.data), self.controller.audience)
         self.clear_view()
         cancel = self.cancel_event = threading.Event()
         vendored, generated = self.include_vendored.get(), self.include_generated.get()

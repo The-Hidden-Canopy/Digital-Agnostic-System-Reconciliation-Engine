@@ -16,7 +16,7 @@ import zlib
 from pathlib import Path
 
 # Bump whenever a parser or the per-file record layout changes.
-PARSER_REVISION = "elucidary-parse-3"
+PARSER_REVISION = "elucidary-parse-5"
 MAX_CACHE_BYTES = 1_500_000_000
 
 

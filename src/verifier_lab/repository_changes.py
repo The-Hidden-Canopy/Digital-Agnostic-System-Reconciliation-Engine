@@ -20,6 +20,20 @@ def _excerpt(node):
             for line in node.get("source_preview", [])[:EXCERPT_LINES]]
 
 
+def baseline_of(scan):
+    """What a later comparison needs from a scan, without holding the scan itself."""
+    kept = []
+    for node in scan["nodes"]:
+        if node.get("kind") in ("file", "function"):
+            slim = {key: node.get(key) for key in ("id", "kind", "name", "path", "line", "sha256", "fingerprint", "label")}
+            if node["kind"] == "function":
+                slim["snippet"] = "\n".join((node.get("snippet") or "").splitlines()[:EXCERPT_LINES])
+            else:
+                slim["source_preview"] = list(node.get("source_preview", [])[:EXCERPT_LINES])
+            kept.append(slim)
+    return {"location_id": scan.get("location_id"), "repo_id": scan.get("repo_id"), "nodes": kept}
+
+
 def compare_scans(previous, current):
     """Compare known file bytes and extracted function fingerprints, not behavior."""
     if (not previous.get("location_id") or previous.get("location_id") != current.get("location_id") or

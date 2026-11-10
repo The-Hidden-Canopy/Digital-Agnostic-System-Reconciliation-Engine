@@ -27,7 +27,11 @@ def explain_unresolved_call(call, level):
     if level == "beginner":
         return "The scan could not tell what this call uses. That does not mean it has no target."
     form = call.get("unresolved_form")
-    if form == "complex":
+    if form == "local":
+        detail = "The called name is a parameter, local variable or local function value in the enclosing function, so the scan does not match it to a definition elsewhere."
+    elif form == "arity":
+        detail = "A definition with this name was found, but the number of written arguments does not fit its parameters, so it is not offered as a target."
+    elif form == "complex":
         detail = "The written callee is not a simple name or a recognized member form."
     elif form == "member":
         detail = "The scan did not establish a unique target for this member or attribute call."
@@ -417,8 +421,14 @@ def possible_callers(nodes, target_id, level, max_depth=1, limit=60, index=None)
         raise ValueError("select a function in this scan")
     reverse, unresolved, partial = {}, 0, False
     if index is not None:
-        # Built once per scan from every inferred call edge, so long call lists are not cut short.
-        reverse, unresolved, partial = index.callers, index.unresolved_calls, not index.complete
+        # Read from every inferred call edge of the scan, so long call lists are not cut short.
+        unresolved, partial = index.unresolved_calls, not index.complete
+
+        class _Reverse:
+            @staticmethod
+            def get(target, default=()):
+                return index.callers_of(target) or default
+        reverse = _Reverse
     for caller in (() if index is not None else nodes):
         if caller.get("kind") not in ("file", "function"): continue
         partial = partial or bool(caller.get("call_sites_truncated"))

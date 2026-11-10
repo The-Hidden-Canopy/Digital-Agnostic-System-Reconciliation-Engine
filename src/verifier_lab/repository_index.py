@@ -13,9 +13,8 @@ class RepositoryIndex:
         self.edges = edges
         self.complete = complete  # False when the scan dropped connections at its limit
         self._incident = defaultdict(list)
-        self.callers = defaultdict(list)
+        self.callers = defaultdict(list)  # target id -> inferred call edges, in a stable order
         self.by_path = defaultdict(list)
-        self.by_location = defaultdict(list)
         self.unresolved_calls = 0
         self.partial_call_lists = False
         self._folders = None
@@ -27,17 +26,14 @@ class RepositoryIndex:
             if target != source:
                 self._incident[target].append(edge)
             if edge.get("kind") == "possible call" and edge.get("evidence") == "inferred" and source in self.nodes and target in self.nodes:
-                via = {key: edge.get(key) for key in ("written", "path", "line", "snippet", "snippet_truncated", "sha256", "basis")}
-                via.update({"source": source, "target": target, "evidence": "inferred", "call_evidence": "static"})
-                self.callers[target].append(via)
+                self.callers[target].append(edge)
         for sites in self.callers.values():
-            sites.sort(key=lambda item: (item.get("path") or "", item.get("line") or 0, item["source"], item.get("written") or ""))
+            if len(sites) > 1:
+                sites.sort(key=lambda item: (item.get("path") or "", item.get("line") or 0, item["source"], item.get("written") or ""))
         for node in self.nodes.values():
             path = node.get("path")
             if path and node["kind"] != "file":
                 self.by_path[path].append(node["id"])
-                if type(node.get("line")) is int:
-                    self.by_location[(path, node["line"])].append(node["id"])
             if node["kind"] in ("file", "function"):
                 self.partial_call_lists = self.partial_call_lists or bool(node.get("call_sites_truncated"))
                 self.unresolved_calls += sum(call.get("resolution") == "unresolved" for call in node.get("call_sites", []))
@@ -70,7 +66,17 @@ class RepositoryIndex:
         return self.by_path.get(path, [])
 
     def at(self, path, line):
-        return self.by_location.get((path, line), [])
+        return [ident for ident in self.by_path.get(path, ()) if self.nodes[ident].get("line") == line]
+
+    def callers_of(self, target):
+        """Possible callers of one function, each with the written call that suggests it."""
+        found = []
+        for edge in self.callers.get(target, ()):
+            via = {key: edge.get(key) for key in ("written", "path", "line", "snippet", "sha256", "basis")}
+            via.update({"snippet_truncated": bool(edge.get("snippet_truncated")), "source": edge["source"], "target": target,
+                        "evidence": "inferred", "call_evidence": "static"})
+            found.append(via)
+        return found
 
     def enclosing(self, path, line):
         """The innermost recorded function containing a line, else the file."""

@@ -71,18 +71,21 @@ class ScanLimits:
     detect_build_trees: bool = False    # skip folders that contain a build-tree or virtual-environment marker
     skip_generated: bool = False        # list generated or minified files without parsing them
     list_unparsed_files: bool = False   # keep unreadable, oversized and generated files visible as items
+    compact_records: bool = False       # in-process only: slotted call records and shared strings
 
     @classmethod
     def desktop(cls, *, include_vendored=False, include_generated=False):
         """Bounds sized for a whole repository in the native desktop application."""
         from .repository_workers import default_worker_count
         return cls(max_files=20_000, max_nodes=600_000, max_directories=150_000, max_file_bytes=2_000_000,
-                   max_edges=2_000_000, max_preview_chars=6_000_000, max_preview_lines=60,
-                   max_context_chars=12_000_000, max_context_lines_per_file=120, max_mapped_calls=20_000,
+                   # Captured excerpts are only the fallback for files that change after the scan;
+                   # an unchanged file is shown whole from disk once its bytes are checked against the scan.
+                   max_edges=2_000_000, max_preview_chars=3_000_000, max_preview_lines=40,
+                   max_context_chars=6_000_000, max_context_lines_per_file=60, max_mapped_calls=20_000,
                    max_warnings=400, workers=default_worker_count(),
                    skip_directories=frozenset(SKIP if include_vendored else VENDOR_OR_BUILD),
                    detect_build_trees=not include_vendored, skip_generated=not include_generated,
-                   list_unparsed_files=True)
+                   list_unparsed_files=True, compact_records=True)
 
 
 def _link(path):
@@ -276,7 +279,8 @@ def _walk(root: Path, limits: ScanLimits, cover: _Coverage, cancelled, progress)
 
 def _excerpts(text: str, parsed: dict, limits: ScanLimits):
     lines = text.splitlines()
-    preview = [{"line": number, "text": line[:MAX_PREVIEW_LINE_CHARS], "truncated": len(line) > MAX_PREVIEW_LINE_CHARS}
+    # [line number, text, shortened]: expanded to a dictionary only for files inside the scan-wide excerpt budget
+    preview = [[number, line[:MAX_PREVIEW_LINE_CHARS], len(line) > MAX_PREVIEW_LINE_CHARS]
                for number, line in enumerate(lines[:limits.max_preview_lines], 1)]
     captured = len(preview)
     evidence_points = [line for node in parsed["nodes"] for line in (node.get("shape") or {}).get("evidence_lines", [])]
@@ -284,7 +288,7 @@ def _excerpts(text: str, parsed: dict, limits: ScanLimits):
                      if type(item.get("line")) is int and 1 <= item["line"] <= len(lines)})
     wanted = sorted({line for point in points for line in range(max(1, point - CONTEXT_RADIUS), min(len(lines), point + CONTEXT_RADIUS) + 1)
                      if line > captured})
-    context = [{"line": number, "text": lines[number - 1][:MAX_PREVIEW_LINE_CHARS], "truncated": len(lines[number - 1]) > MAX_PREVIEW_LINE_CHARS}
+    context = [[number, lines[number - 1][:MAX_PREVIEW_LINE_CHARS], len(lines[number - 1]) > MAX_PREVIEW_LINE_CHARS]
                for number in wanted[:limits.max_context_lines_per_file]]
     return {"line_count": len(lines), "preview": preview, "context": context, "context_wanted": len(wanted)}
 
@@ -319,6 +323,9 @@ def _inspect_file(root: Path, rel: str, language: str, limits: ScanLimits, worke
             cached.update(path=rel, language=language, digest=digest, cache_key=key, from_cache=True)
             for node in cached["parsed"]["nodes"]:
                 node["sha256"], node["path"] = digest, rel
+            if limits.compact_records:
+                from .repository_records import compact_parsed
+                compact_parsed(cached["parsed"], rel)
             return cached
     try:
         if worker is not None:
@@ -340,6 +347,9 @@ def _inspect_file(root: Path, rel: str, language: str, limits: ScanLimits, worke
     if key is not None:
         cache.put(key, record)
         record["cache_key"] = key
+    if limits.compact_records:
+        from .repository_records import compact_parsed
+        compact_parsed(parsed, rel)
     return record
 
 
@@ -458,21 +468,20 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
             cache_keys.append(record["cache_key"])
         digests[digest].append(rel)
         preview = []
-        for item in record["preview"]:
+        for number, text, shortened in record["preview"]:
             if preview_budget <= 0:
                 break
             available = min(MAX_PREVIEW_LINE_CHARS, max(0, preview_budget - 1))
-            preview.append({"line": item["line"], "text": item["text"][:available],
-                            "truncated": item["truncated"] or len(item["text"]) > available})
+            preview.append({"line": number, "text": text[:available], "truncated": shortened or len(text) > available})
             preview_budget -= len(preview[-1]["text"]) + 1
         context = []
-        for item in record["context"]:
+        for number, text, shortened in record["context"]:
             if context_budget <= 0:
                 break
             available = min(MAX_PREVIEW_LINE_CHARS, max(0, context_budget - 1))
-            context.append({"line": item["line"], "text": item["text"][:available],
-                            "truncated": item["truncated"] or len(item["text"]) > available})
+            context.append({"line": number, "text": text[:available], "truncated": shortened or len(text) > available})
             context_budget -= len(context[-1]["text"]) + 1
+        record["preview"] = record["context"] = None  # the scan keeps only what fitted the budget
         node = {"id": fid, "kind": "file", "name": rel, "path": rel, "sha256": digest,
                 "fingerprint": digest, "language": language, "evidence": "static", "source_preview": preview,
                 "source_preview_truncated": len(preview) < record["line_count"] or any(line["truncated"] for line in preview),
@@ -498,21 +507,43 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
             node["call_sites"] = []
             node["call_sites_truncated"] = False
 
-    def link_call(file, call, target, basis):
+    def fits(call, target):
+        """False when the written argument count cannot fit the candidate's parameters."""
+        arity = (node_by_id[target].get("shape") or {}).get("arity")
+        count = call.get("written_arguments")
+        if not arity or type(count) is not int or call.get("expands"):
+            return True
+        # Type::method(receiver, ...) writes the receiver as an argument; receiver.method(...) does not.
+        for offset in ((1,) if arity.get("self") and "::" in call.get("written", "") else (0,)):
+            if arity["min"] + offset <= count and (arity["max"] is None or count <= arity["max"] + offset):
+                return True
+        return False
+
+    def link_call(file, call, target, basis, form=None):
         """Record the written call (static) and, when a rule chose one, its candidate target (inferred)."""
         caller = node_by_id.get(call["caller"])
         if not caller:
             return
+        if target and not fits(call, target):
+            target, basis, form = None, None, "arity"
         if target:
-            edges.append({"source": call["caller"], "target": target, "kind": "possible call",
-                          "evidence": "inferred", "path": file["path"], "line": call["line"], "written": call["written"],
-                          "snippet": call["snippet"], "snippet_truncated": call.get("snippet_truncated", False),
-                          "sha256": file["digest"], "basis": basis})
+            edge = {"source": call["caller"], "target": target, "kind": "possible call",
+                    "evidence": "inferred", "path": file["path"], "line": call["line"], "written": call["written"],
+                    "snippet": call["snippet"], "sha256": file["digest"], "basis": basis}
+            if call.get("snippet_truncated") or not sl.compact_records:
+                edge["snippet_truncated"] = call.get("snippet_truncated", False)
+            edges.append(edge)
         if len(caller["call_sites"]) >= 30:
             caller["call_sites_truncated"] = True
             return
-        unresolved = None if target else ("complex" if not (call.get("base") or call.get("member") or call.get("scope")) else
-                                           "member" if (call.get("attribute") or call.get("member")) else "name")
+        unresolved = None if target else form or ("complex" if not (call.get("base") or call.get("member") or call.get("scope")) else
+                                                   "member" if (call.get("attribute") or call.get("member")) else "name")
+        if sl.compact_records:
+            # The parser's record becomes the call site: no second object per written call.
+            call["path"], call["sha256"], call["evidence"] = file["path"], file["digest"], "static"
+            call["resolution"], call["target_id"], call["basis"], call["unresolved_form"] = "inferred" if target else "unresolved", target, basis, unresolved
+            caller["call_sites"].append(call)
+            return
         caller["call_sites"].append({"written": call["written"], "written_truncated": call.get("written_truncated", False), "written_arguments": call.get("written_arguments"),
             "path": file["path"], "line": call["line"], "snippet": call["snippet"], "snippet_truncated": call.get("snippet_truncated", False), "line_sha256": call["line_sha256"], "sha256": file["digest"],
             "evidence": "static", "resolution": "inferred" if target else "unresolved", "target_id": target, "basis": basis, "unresolved_form": unresolved})
@@ -524,6 +555,19 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
         if basis:
             edge["basis"] = basis
         edges.append(edge)
+
+    LOCAL_BASIS = "a function of this name is defined inside the enclosing function; conditional redefinition is not resolved"
+
+    def local_call(file, call):
+        """A call to a name bound inside the enclosing function is settled here and never matched elsewhere."""
+        if call.get("local_target"):
+            known = call["local_target"] in file["ids"] and node_by_id.get(call["local_target"], {}).get("kind") == "function"
+            link_call(file, call, call["local_target"] if known else None, LOCAL_BASIS if known else None, None if known else "local")
+            return True
+        if call.get("local"):
+            link_call(file, call, None, None, "local")
+            return True
+        return False
 
     def same_class(file, call):
         """A call written on self/this, or a bare name inside a member body, against this file's members of that type."""
@@ -586,6 +630,8 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
         for call in parsed["calls"]:
             if call["caller"] not in ids:
                 continue
+            if local_call(f, call):
+                continue
             target_id, basis = None, None
             if call["base"] in bindings:
                 choices = bindings[call["base"]]
@@ -645,6 +691,8 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
         for call in parsed["calls"]:
             if call["caller"] not in ids:
                 continue
+            if local_call(f, call):
+                continue
             target_id, basis = None, None
             if call["base"] in bindings and len(bindings[call["base"]]) == 1:
                 imp, target = bindings[call["base"]][0]
@@ -700,6 +748,8 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
         for call in parsed["calls"]:
             if call["caller"] not in ids:
                 continue
+            if local_call(f, call):
+                continue
             target_id, basis = same_class(f, call), None
             if target_id:
                 basis = MEMBER_BASIS.replace("dynamic dispatch", "virtual dispatch") + "; macros are not expanded"
@@ -709,10 +759,16 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
                 if len(matches) == 1:
                     target_id = matches[0]
                     basis = "unique qualified name across scanned files; overloads, templates, macros, compilation and linking are not resolved"
-            elif not call["attribute"]:
-                matches = cpp_definitions.get(call["base"], [])
-                if len(matches) == 1:
-                    target_id = matches[0][1]
+            elif not call["attribute"] and call["base"]:
+                here = [node_id for node_id in parsed["top_level"].get(call["base"], []) if node_id in ids]
+                # A static or unnamed-namespace function in another file cannot be what this call names.
+                visible = [node_id for owner, node_id in cpp_definitions.get(call["base"], [])
+                           if owner is f or not node_by_id[node_id].get("file_local")]
+                if len(here) == 1:
+                    target_id = here[0]
+                    basis = "unique name defined in this file; overloads, macros and templates are not resolved"
+                elif not here and len(visible) == 1:
+                    target_id = visible[0]
                     basis = "unique indexed name; compilation and linking are not resolved"
             link_call(f, call, target_id, basis)
 
@@ -726,6 +782,8 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
         parsed, ids = f["parsed"], f["ids"]
         for call in parsed["calls"]:
             if call["caller"] not in ids:
+                continue
+            if local_call(f, call):
                 continue
             target_id, basis = same_class(f, call), None
             if target_id:
@@ -802,6 +860,8 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
         for call in parsed["calls"]:
             if call["caller"] not in ids:
                 continue
+            if local_call(f, call):
+                continue
             target_id, basis = same_class(f, call), None
             if target_id:
                 basis = "unique method name for the same type in this file; trait dispatch, generics and impl blocks in other files are not resolved"
@@ -843,7 +903,8 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
             if mapped_calls >= sl.max_mapped_calls or len(nodes) >= sl.max_nodes or len(edges) + needed_edges > sl.max_edges:
                 unmapped_calls += 1
                 continue
-            fingerprint = hashlib.sha256((call["written"] + "\n" + call["line_sha256"]).encode()).hexdigest()
+            line_hash = call.get("line_sha256") or hashlib.sha256(call["snippet"].encode("utf-8")).hexdigest()
+            fingerprint = hashlib.sha256((call["written"] + "\n" + line_hash).encode()).hexdigest()
             stable = hashlib.sha256((caller["id"] + "#" + str(call["line"]) + "#" + fingerprint + "#" + str(ordinal)).encode()).hexdigest()
             call_id = "callsite:" + stable
             call["map_node_id"] = call_id
@@ -943,7 +1004,107 @@ class _Returns(ast.NodeVisitor):
     visit_Lambda = visit_FunctionDef
 
 
-def _python_shape(node, lines):
+_SIGNATURE_KEEPING_DECORATORS = {"staticmethod", "classmethod", "abstractmethod", "override", "final", "overload"}
+
+
+def _python_arity(node, is_method):
+    """Written-argument counts the signature accepts, or None when a decorator may have changed it."""
+    names = {(d.attr if isinstance(d, ast.Attribute) else d.id if isinstance(d, ast.Name) else None) for d in node.decorator_list}
+    if not names <= _SIGNATURE_KEEPING_DECORATORS:
+        return None
+    args = node.args
+    positional = len(args.posonlyargs) + len(args.args)
+    required = positional - len(args.defaults) + sum(default is None for default in args.kw_defaults)
+    maximum = None if args.vararg or args.kwarg else positional + len(args.kwonlyargs)
+    if is_method and "staticmethod" not in names and positional:
+        # self or cls is supplied by the call syntax, not written as an argument
+        required -= int(positional > len(args.defaults))
+        maximum = None if maximum is None else maximum - 1
+    return {"min": max(required, 0), "max": maximum, "self": False}
+
+
+class _Locals(ast.NodeVisitor):
+    """Names bound in one function body (nested bodies excluded), split into values and nested functions."""
+
+    def __init__(self):
+        self.values, self.functions, self.released = set(), {}, set()
+
+    def bind(self, target):
+        for item in ast.walk(target):
+            if isinstance(item, ast.Name):
+                self.values.add(item.id)
+
+    def visit_FunctionDef(self, node):
+        self.functions[node.name] = self.functions.get(node.name, 0) + 1
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node):
+        self.values.add(node.name)
+
+    def visit_Lambda(self, node):
+        pass
+
+    def visit_ListComp(self, node):
+        pass  # comprehension variables live in their own scope
+
+    visit_SetComp = visit_DictComp = visit_GeneratorExp = visit_ListComp
+
+    def visit_Assign(self, node):
+        for target in node.targets:
+            self.bind(target)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node):
+        self.bind(node.target); self.generic_visit(node)
+
+    visit_AugAssign = visit_AnnAssign
+
+    def visit_NamedExpr(self, node):
+        self.bind(node.target); self.generic_visit(node)
+
+    def visit_For(self, node):
+        self.bind(node.target); self.generic_visit(node)
+
+    visit_AsyncFor = visit_For
+
+    def visit_With(self, node):
+        for item in node.items:
+            if item.optional_vars is not None:
+                self.bind(item.optional_vars)
+        self.generic_visit(node)
+
+    visit_AsyncWith = visit_With
+
+    def visit_ExceptHandler(self, node):
+        if node.name:
+            self.values.add(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node):
+        if node.name:
+            self.values.add(node.name)
+        self.generic_visit(node)
+
+    def visit_Global(self, node):
+        self.released.update(node.names)
+
+    visit_Nonlocal = visit_Global
+
+
+def _python_locals(node):
+    found = _Locals()
+    arguments = node.args
+    for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg):
+        if argument is not None:
+            found.values.add(argument.arg)
+    for statement in node.body:
+        found.visit(statement)
+    functions = {name for name, count in found.functions.items() if count == 1 and name not in found.values} - found.released
+    return (found.values | set(found.functions)) - functions - found.released, functions
+
+
+def _python_shape(node, lines, is_method=False):
     from .repository_learning import evidence_lines
     args = node.args
     entries = [(a, "positional-only") for a in args.posonlyargs]
@@ -959,7 +1120,8 @@ def _python_shape(node, lines):
     return {"parameters": [{"name": a.arg, "kind": kind, "line": a.lineno} for a, kind in entries[:30]],
             "parameters_truncated": len(entries) > 30, "parameter_detail": "named",
             "async": isinstance(node, ast.AsyncFunctionDef), "return_lines": returns.lines[:30],
-            "returns_truncated": len(returns.lines) > 30, "return_detail": "explicit", "features": returns.features[:30], "features_truncated": len(returns.features) > 30,
+            "returns_truncated": len(returns.lines) > 30, "return_detail": "explicit", "arity": _python_arity(node, is_method),
+            "features": returns.features[:30], "features_truncated": len(returns.features) > 30,
             "evidence_lines": evidence_lines(lines, [a.lineno for a, _ in entries[:30]] + returns.lines[:30] + [f["line"] for f in returns.features[:30]])}
 
 
@@ -971,6 +1133,7 @@ class _Visitor(ast.NodeVisitor):
         self.nodes, self.edges, self.calls, self.imports = [], [], [], []
         self.top_level, self.names, self.stack = defaultdict(list), {}, []
         self.members = {}
+        self.local_scopes = []
         self.truncated = False
 
     def _enclosing_class(self):
@@ -1003,7 +1166,7 @@ class _Visitor(ast.NodeVisitor):
         self.nodes.append({"id": key, "kind": "function", "name": qual, "path": self.path,
                            "line": node.lineno, "end_line": node.end_lineno, "snippet": snippet,
                            "sha256": self.digest, "fingerprint": fingerprint, "language": "python",
-                           "shape": _python_shape(node, self.lines), "evidence": "static"})
+                           "shape": _python_shape(node, self.lines, bool(self.stack) and self.stack[-1][1] is None), "evidence": "static"})
         self.edges.append({"source": parent, "target": key, "kind": "defines", "evidence": "static", "path": self.path, "line": node.lineno})
         if not self.stack:
             self.top_level[node.name].append(key)
@@ -1011,8 +1174,11 @@ class _Visitor(ast.NodeVisitor):
             owner = ".".join(entry[0] for entry in self.stack)
             self.members.setdefault(owner, {}).setdefault(node.name, []).append(key)
         self.stack.append((node.name, key))
+        values, functions = _python_locals(node)
+        self.local_scopes.append((values, functions, ".".join(entry[0] for entry in self.stack)))
         for child in node.body:
             self.visit(child)
+        self.local_scopes.pop()
         self.stack.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
@@ -1058,6 +1224,17 @@ class _Visitor(ast.NodeVisitor):
                 owner = self._enclosing_class()
                 if owner:
                     record["member"], record["member_of"] = attribute, owner
+            if base and not attribute:
+                # Python scoping is lexical: a name bound in an enclosing function is that binding, not the module's.
+                for values, functions, prefix in reversed(self.local_scopes):
+                    if base in functions:
+                        record["local_target"] = "function:" + self.path + ":" + prefix + "." + base
+                        break
+                    if base in values:
+                        record["local"] = True
+                        break
+            if any(isinstance(item, ast.Starred) for item in node.args) or any(keyword.arg is None for keyword in node.keywords):
+                record["expands"] = True  # *args or **kwargs: the number of values passed is not visible
             self.calls.append(record)
         else:
             self.truncated = True

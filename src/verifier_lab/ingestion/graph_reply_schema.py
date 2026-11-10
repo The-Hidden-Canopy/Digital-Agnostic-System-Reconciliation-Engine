@@ -87,7 +87,10 @@ def validate_graph_result(result, fmt, data, path):
 
     def shape(value, start, end):
         fields(value, {"parameters", "parameters_truncated", "parameter_detail", "async", "return_lines",
-                       "returns_truncated", "return_detail", "features", "features_truncated", "evidence_lines"})
+                       "returns_truncated", "return_detail", "features", "features_truncated", "evidence_lines"}, {"arity"})
+        if value.get("arity") is not None:
+            fields(value["arity"], {"min", "max", "self"}); number(value["arity"]["min"]); boolean(value["arity"]["self"])
+            if value["arity"]["max"] is not None: number(value["arity"]["max"])
         for key in ("parameters_truncated", "returns_truncated", "features_truncated"): boolean(value[key])
         if value["async"] is not None: boolean(value["async"])
         if value["parameter_detail"] not in ("named", "named_or_pattern"): reject()
@@ -119,13 +122,14 @@ def validate_graph_result(result, fmt, data, path):
     ids = {}
     for node in result["nodes"]:
         fields(node, {"id", "kind", "name", "path", "line", "sha256", "evidence"},
-               {"end_line", "snippet", "fingerprint", "language", "shape"})
+               {"end_line", "snippet", "fingerprint", "language", "shape", "file_local"})
         for key in ("id", "name", "path"): string(node[key])
         if node["id"] in ids or node["path"] != path or node["sha256"] != digest or node["evidence"] != "static": reject()
         line(node["line"])
         if node["kind"] not in ("function", "dependency") or not node["id"].startswith(("function:" if node["kind"] == "function" else "import:") + path + ":"): reject()
         if node["kind"] == "function":
-            fields(node, {"id", "kind", "name", "path", "line", "end_line", "snippet", "sha256", "fingerprint", "language", "shape", "evidence"})
+            fields(node, {"id", "kind", "name", "path", "line", "end_line", "snippet", "sha256", "fingerprint", "language", "shape", "evidence"}, {"file_local"})
+            if "file_local" in node: boolean(node["file_local"])
             line(node["end_line"])
             if node["end_line"] < node["line"] or node["language"] != _LANGUAGES[fmt]: reject()
             string(node["snippet"]); hash_value(node["fingerprint"])
@@ -173,10 +177,12 @@ def validate_graph_result(result, fmt, data, path):
 
     for call in result["calls"]:
         fields(call, {"caller", "base", "attribute", "written", "written_truncated", "written_arguments", "line", "snippet", "snippet_truncated", "line_sha256"},
-               {"member", "member_of", "scope"})
+               {"member", "member_of", "scope", "local", "local_target", "expands"})
         string(call["caller"]); string(call["written"])
-        for key in ("member", "member_of", "scope"):
+        for key in ("member", "member_of", "scope", "local_target"):
             if key in call: string(call[key])
+        for key in ("local", "expands"):
+            if key in call: boolean(call[key])
         if ("member" in call) != ("member_of" in call): reject()
         for key in ("base", "attribute"): string(call[key], nullable=True)
         if call["caller"] != file_id and (call["caller"] not in ids or ids[call["caller"]]["kind"] != "function"): reject()

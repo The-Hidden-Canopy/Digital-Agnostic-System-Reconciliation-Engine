@@ -200,6 +200,17 @@ class Service:
                     "suggested_node_id": matches[0]["id"] if len(matches) == 1 else None})
         return result
 
+    def repository_release(self, repo_id, scan_id):
+        """Drop a scan the caller no longer shows, so its memory is free before the next scan is built."""
+        with self.store.lock:
+            current = self.repository_scan_ids.get(repo_id) if isinstance(repo_id, str) else None
+            if current is None or not isinstance(scan_id, str) or not secrets.compare_digest(current, scan_id):
+                return {"released": False}
+            for held in (self.repository_scan_ids, self.repository_snapshots, self.repository_edges, self.repository_indexes,
+                         self.repository_content_access, self.repository_assistant_permitted, self.repository_roots):
+                held.pop(repo_id, None)
+        return {"released": True}
+
     def repository_remember(self, repo_id, scan_id):
         with self.store.tx() as db:
             self._check_repository_scan(repo_id, scan_id)

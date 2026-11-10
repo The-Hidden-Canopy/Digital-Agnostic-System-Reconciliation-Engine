@@ -86,8 +86,8 @@ class _TreeVisitor:
         self.nodes, self.edges, self.imports, self.calls = [], [], [], []
         self.top_level, self.exports, self.pending_exports, self.names = {}, {}, [], {}
         self.members, self.qualified = {}, {}
-        self.stack, self.scopes, self.classes = [], [], []
-        self.class_depth = 0
+        self.stack, self.scopes, self.classes, self.local_scopes = [], [], [], []
+        self.class_depth = self.anonymous_depth = 0
         self.truncated = False
 
     def text(self, node):
@@ -140,7 +140,10 @@ class _TreeVisitor:
             return True
         if typ in ("namespace_definition", "class_specifier", "struct_specifier"):
             name = self.text(node.child_by_field_name("name"))
+            unnamed = typ == "namespace_definition" and not name  # namespace { ... }: visible in this file only
+            self.anonymous_depth += unnamed
             self.scoped(node, name, typ != "namespace_definition", skip=("namespace_identifier", "type_identifier"))
+            self.anonymous_depth -= unnamed
             return True
         if typ == "function_definition":
             dec = node.child_by_field_name("declarator")
@@ -284,6 +287,116 @@ class _TreeVisitor:
                 identifier = inner
         return self.text(identifier) if identifier is not None and identifier.type == "identifier" else None
 
+    def _arity(self, signature, items):
+        """How many written arguments the parameter list can accept, where the syntax settles it."""
+        if signature is None or self.language in ("javascript", "jsx"):
+            return None  # JavaScript accepts any number of arguments
+        required = optional = 0
+        variadic = takes_self = False
+        for item in items:
+            text = self.text(item)
+            if item.type == "self_parameter":
+                takes_self = True
+            elif item.type in ("variadic_parameter_declaration", "variadic_parameter", "rest_pattern") or text.strip() == "...":
+                variadic = True
+            elif self.family == "c":
+                if item.type == "parameter_declaration" and text.strip() == "void":
+                    continue
+                optional += item.type == "optional_parameter_declaration"
+                required += item.type != "optional_parameter_declaration"
+            elif self.family == "ts":
+                pattern = item.child_by_field_name("pattern")
+                if pattern is not None and pattern.type == "rest_pattern":
+                    variadic = True
+                elif pattern is not None and pattern.type == "this":
+                    continue
+                elif item.type == "optional_parameter" or item.child_by_field_name("value") is not None:
+                    optional += 1
+                else:
+                    required += 1
+            elif self.family == "csharp":
+                tokens = [child.type for child in item.children]
+                if any(self.text(child) == "params" for child in item.children):
+                    variadic = True
+                elif "=" in tokens or "equals_value_clause" in tokens:
+                    optional += 1
+                else:
+                    required += 1
+            else:
+                required += 1
+        if self.language == "c" and not items:
+            variadic = True  # f() in C leaves the parameters unspecified
+        maximum = None if variadic else required + optional
+        if self.language == "cpp":
+            required = 0  # default arguments are usually written on a declaration in another file
+        return {"min": required, "max": maximum, "self": takes_self}
+
+    def _declared(self, node, body):
+        """(names bound to values, names of functions declared) directly in this function, nested bodies excluded."""
+        values, functions = set(), set()
+        _, items = self._parameters(node)
+        for item in items:
+            name = self._parameter_name(item)
+            if name:
+                values.add(name)
+            elif item.type not in ("self_parameter",):
+                values.update(self._identifiers(item.child_by_field_name("pattern") or item))
+
+        def declarator_name(current):
+            while current is not None and current.type in ("init_declarator", "pointer_declarator", "reference_declarator", "array_declarator", "parenthesized_declarator"):
+                inner = current.child_by_field_name("declarator")
+                current = inner if inner is not None else next((c for c in current.named_children if c.type in ("identifier", "structured_binding_declarator")), None)
+            if current is None or current.type == "function_declarator":
+                return []  # a local prototype names a function defined elsewhere
+            return self._identifiers(current) if current.type == "structured_binding_declarator" else ([self.text(current)] if current.type == "identifier" else [])
+
+        def walk(current):
+            typ = current.type
+            if typ in ("function_declaration", "generator_function_declaration", "function_item", "local_function_statement"):
+                functions.add(self.text(current.child_by_field_name("name")))
+                return
+            if typ in _NESTED_BODIES:
+                return
+            if self.family == "c":
+                if typ in ("declaration", "for_range_loop", "condition_declaration", "parameter_declaration"):
+                    for index, child in enumerate(current.children):
+                        if current.field_name_for_child(index) == "declarator":
+                            values.update(declarator_name(child))
+            elif self.family == "ts":
+                if typ == "variable_declarator":
+                    name, value = current.child_by_field_name("name"), current.child_by_field_name("value")
+                    if name is not None and name.type == "identifier" and value is not None and value.type in ("arrow_function", "function_expression"):
+                        functions.add(self.text(name))
+                    elif name is not None:
+                        values.update(self._identifiers(name))
+                elif typ == "catch_clause" and current.child_by_field_name("parameter") is not None:
+                    values.update(self._identifiers(current.child_by_field_name("parameter")))
+            elif self.family == "csharp":
+                if typ in ("variable_declarator", "declaration_expression", "catch_declaration", "single_variable_designation"):
+                    name = current.child_by_field_name("name")
+                    values.update([self.text(name)] if name is not None else self._identifiers(current)[:1])
+                elif typ == "foreach_statement" and current.child_by_field_name("left") is not None:
+                    values.update(self._identifiers(current.child_by_field_name("left")))
+            elif self.family == "rust":
+                if typ in ("let_declaration", "for_expression", "let_condition", "match_arm") and current.child_by_field_name("pattern") is not None:
+                    values.update(self._identifiers(current.child_by_field_name("pattern")))
+            for child in current.named_children:
+                walk(child)
+        if body is not None:
+            walk(body)
+        functions.discard("")
+        return values - functions, functions
+
+    def _identifiers(self, node, limit=40):
+        found, pending = [], [node] if node is not None else []
+        while pending and len(found) < limit:
+            current = pending.pop()
+            if current.type in ("identifier", "shorthand_property_identifier_pattern"):
+                found.append(self.text(current))
+            else:
+                pending.extend(current.named_children)
+        return found
+
     def shape(self, node, body):
         from .repository_learning import evidence_lines
         signature, items = self._parameters(node)
@@ -313,7 +426,7 @@ class _TreeVisitor:
             is_async = "async" in head.replace("(", " ").split()
         return {"parameters": entries, "parameters_truncated": len(items) > 30, "parameter_detail": "named_or_pattern",
                 "async": is_async, "return_lines": returns[:30], "returns_truncated": len(returns) > 30,
-                "return_detail": _RETURN_DETAIL[self.family],
+                "return_detail": _RETURN_DETAIL[self.family], "arity": self._arity(signature, items),
                 "features": features[:30], "features_truncated": len(features) > 30,
                 "evidence_lines": evidence_lines(self.lines, [p["line"] for p in entries] + returns[:30] + [f["line"] for f in features[:30]])}
 
@@ -334,6 +447,9 @@ class _TreeVisitor:
                            "line": start, "end_line": end, "snippet": snippet, "sha256": self.digest,
                            "fingerprint": hashlib.sha256(self.data[node.start_byte:node.end_byte]).hexdigest(),
                            "language": self.language, "shape": self.shape(node, body), "evidence": "static"})
+        if self.family == "c" and not self.class_depth and (self.anonymous_depth or any(
+                child.type == "storage_class_specifier" and self.text(child) == "static" for child in node.children)):
+            self.nodes[-1]["file_local"] = True  # static or in an unnamed namespace: not callable from other files
         self.edges.append({"source": parent, "target": key, "kind": "defines", "evidence": "static", "path": self.path, "line": start})
         owner = None
         if not self.stack:
@@ -351,8 +467,11 @@ class _TreeVisitor:
             if owner:
                 self.members.setdefault(owner, {}).setdefault(short, []).append(key)
         self.stack.append((name, key, owner))
+        values, functions = self._declared(node, body)
+        self.local_scopes.append((values, functions, self.scopes + [x[0] for x in self.stack]))
         if body:
             self.visit(body)
+        self.local_scopes.pop()
         self.stack.pop()
 
     def owner(self):
@@ -370,10 +489,18 @@ class _TreeVisitor:
         if not func:
             return
         base, attr, member, scope = None, None, None, None
+        local, local_target = False, None
         owner = self.owner()
         if func.type == "identifier":
             base = self.text(func)
-            if owner and self.family in ("c", "csharp"):
+            for values, functions, prefix in reversed(self.local_scopes):
+                if base in functions:
+                    local_target = "function:" + self.path + ":" + ".".join(prefix + [base])
+                    break
+                if base in values:
+                    local = True  # a parameter, local variable or local lambda of this name is what is called
+                    break
+            if owner and self.family in ("c", "csharp") and not local and not local_target:
                 member = base  # a bare name inside a member body may be an implicit member call
         elif self.family == "ts" and func.type == "member_expression":
             obj, prop = func.child_by_field_name("object"), func.child_by_field_name("property")
@@ -425,6 +552,12 @@ class _TreeVisitor:
             record["member"], record["member_of"] = member, owner
         if scope:
             record["scope"] = scope
+        if local:
+            record["local"] = True
+        if local_target:
+            record["local_target"] = local_target
+        if args is not None and any(item.type in ("spread_element", "parameter_pack_expansion") for item in args.named_children):
+            record["expands"] = True  # the number of values passed is not visible in the source
         self.calls.append(record)
 
     def add_dependency(self, node, source):

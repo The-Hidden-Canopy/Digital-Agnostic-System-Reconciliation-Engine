@@ -140,6 +140,74 @@ class LanguageTests(unittest.TestCase):
         node = next(n for n in data["nodes"] if n["id"] == "function:src/pkg/service.py:Service.run")
         self.assertEqual([c["written"] for c in node["call_sites"] if c["resolution"] == "unresolved"], ["json.dumps", "self.missing"])
 
+    def test_local_names_argument_counts_and_file_local_functions_are_not_guessed_across_files(self):
+        # Each case below was a wrong guess found by reading real ecosystem code: a call to a local lambda or
+        # parameter matched to an unrelated function that merely had a unique name somewhere in the scan.
+        write(self.root, {
+            "render/window.cpp": "struct Rig {};\nRig step(Rig r, int input, float dt) { return r; }\nbool is(const int& e, const char* kind) { return kind != nullptr; }\n",
+            "play/menu.cpp": "void adjust(float& volume) {\n    const auto step = [&](float& v, float lo, float hi, float by) { v += by; };\n    step(volume, 0.0F, 1.0F, 0.1F);\n}\n"
+                             "bool surface(const char* part) {\n    const auto is = [&](const char* p) { return part == p; };\n    return is(\"water\");\n}\n",
+            "a/one.cpp": "namespace { int helper(int v) { return v; } }\nstatic int twice(int v) { return v * 2; }\nint one() { return helper(1) + twice(2); }\n",
+            "a/two.cpp": "int two() { return helper(2) + twice(3); }\nint three() { return one(1, 2, 3); }\n",
+            "shadow.py": "def handler(value):\n    return value\ndef nested_choice():\n    def handler(value):\n        return -value\n    return handler(1)\n"
+                         "def run(handler, other):\n    other = handler\n    return handler(1) + other(2)\ndef spread(*items):\n    return handler(*items)\n"
+                         "def wrong_count():\n    return handler(1, 2, 3)\ndef right():\n    return handler(1)\n",
+            "shadow.ts": "export function load(id: string, retries?: number): string { return id; }\n"
+                         "export function a(load: (x: string) => string) { return load('x'); }\n"
+                         "export function b() { const load = (x: string) => x; return load('x'); }\n"
+                         "export function c() { return load('x', 1, 2); }\nexport function d() { return load('x'); }\n",
+        })
+        data = scan(self.root)
+        by_id = {n["id"]: n for n in data["nodes"]}
+
+        def only_call(ident):
+            return [(c["resolution"], c["target_id"], c["unresolved_form"]) for c in by_id[ident]["call_sites"]]
+        self.assertEqual(only_call("function:play/menu.cpp:adjust"), [("unresolved", None, "local")])
+        self.assertEqual(only_call("function:play/menu.cpp:surface"), [("unresolved", None, "local")])
+        # File-local definitions resolve inside their own file and are never offered to another file.
+        self.assertEqual(only_call("function:a/one.cpp:one"), [("inferred", "function:a/one.cpp:helper", None), ("inferred", "function:a/one.cpp:twice", None)])
+        self.assertTrue(by_id["function:a/one.cpp:helper"]["file_local"]); self.assertTrue(by_id["function:a/one.cpp:twice"]["file_local"])
+        self.assertEqual(only_call("function:a/two.cpp:two"), [("unresolved", None, "name"), ("unresolved", None, "name")])
+        self.assertEqual(only_call("function:a/two.cpp:three"), [("unresolved", None, "arity")])
+        # Python scoping is lexical: the nested definition is the target, and parameters or locals are not the module function.
+        self.assertEqual(only_call("function:shadow.py:nested_choice"), [("inferred", "function:shadow.py:nested_choice.handler", None)])
+        self.assertIn("inside the enclosing function", by_id["function:shadow.py:nested_choice"]["call_sites"][0]["basis"])
+        self.assertEqual(only_call("function:shadow.py:run"), [("unresolved", None, "local"), ("unresolved", None, "local")])
+        self.assertEqual(only_call("function:shadow.py:spread"), [("inferred", "function:shadow.py:handler", None)])
+        self.assertEqual(only_call("function:shadow.py:wrong_count"), [("unresolved", None, "arity")])
+        self.assertEqual(only_call("function:shadow.py:right"), [("inferred", "function:shadow.py:handler", None)])
+        self.assertEqual(only_call("function:shadow.ts:a"), [("unresolved", None, "local")])
+        self.assertEqual(only_call("function:shadow.ts:b"), [("inferred", "function:shadow.ts:b.load", None)])
+        self.assertEqual(only_call("function:shadow.ts:c"), [("unresolved", None, "arity")])
+        self.assertEqual(only_call("function:shadow.ts:d"), [("inferred", "function:shadow.ts:load", None)])
+        from verifier_lab.repository_learning import explain_unresolved_call
+        self.assertIn("local variable", explain_unresolved_call({"unresolved_form": "local"}, "technical"))
+        self.assertIn("does not fit its parameters", explain_unresolved_call({"unresolved_form": "arity"}, "explore"))
+        self.assertIn("does not mean it has no target", explain_unresolved_call({"unresolved_form": "local"}, "beginner"))
+
+    def test_method_and_default_argument_counts_do_not_reject_valid_calls(self):
+        write(self.root, {
+            "m.py": "import functools\nclass K:\n    def plain(self, a, b=1):\n        return a\n    @staticmethod\n    def fixed(a):\n        return a\n"
+                    "    @functools.cache\n    def wrapped(self, a):\n        return a\n"
+                    "    def use(self):\n        return self.plain(1) + self.plain(1, 2) + self.fixed(3) + self.wrapped(1, 2, 3) + self.plain()\n"
+                    "def kw(a, *, key, other=None):\n    return a\ndef caller():\n    return kw(1, key=2) + kw(1)\n",
+            "lib.hpp": "int scale(int value, int factor = 2);\n", "lib.cpp": '#include "lib.hpp"\nint scale(int value, int factor) { return value * factor; }\n',
+            "use.cpp": '#include "lib.hpp"\nint use() { return scale(3); }\n',
+            "s.rs": "pub struct S;\nimpl S {\n  pub fn area(&self, k: i32) -> i32 { k }\n  pub fn run(&self) -> i32 { self.area(1) + S::area(self, 2) + self.area(1, 2) }\n}\n",
+        })
+        data = scan(self.root)
+        by_id = {n["id"]: n for n in data["nodes"]}
+        self.assertEqual([(c["written"], c["resolution"], c["unresolved_form"]) for c in by_id["function:m.py:K.use"]["call_sites"]],
+                         [("self.plain", "inferred", None), ("self.plain", "inferred", None), ("self.fixed", "inferred", None),
+                          ("self.wrapped", "inferred", None), ("self.plain", "unresolved", "arity")])
+        self.assertIsNone(by_id["function:m.py:K.wrapped"]["shape"]["arity"])
+        self.assertEqual(by_id["function:m.py:K.plain"]["shape"]["arity"], {"min": 1, "max": 2, "self": False})
+        self.assertEqual([(c["resolution"], c["unresolved_form"]) for c in by_id["function:m.py:caller"]["call_sites"]], [("inferred", None), ("unresolved", "arity")])
+        # C++ defaults usually sit on the declaration, so too few written arguments is not a reason to refuse.
+        self.assertEqual(by_id["function:use.cpp:use"]["call_sites"][0]["target_id"], "function:lib.cpp:scale")
+        self.assertEqual([(c["written"], c["resolution"], c["unresolved_form"]) for c in by_id["function:s.rs:S.run"]["call_sites"]],
+                         [("self.area", "inferred", None), ("S::area", "inferred", None), ("self.area", "unresolved", "arity")])
+
     def test_every_inferred_link_carries_a_basis_and_no_link_claims_execution(self):
         write(self.root, {"a.py": "from b import f\nclass K:\n    def m(self):\n        return self.n() + f()\n    def n(self):\n        return 1\n", "b.py": "def f():\n    return 1\n",
                           "c.cpp": "int g() { return 1; }\nint h() { return g(); }\n", "d.rs": "fn x() -> i32 { y() }\nfn y() -> i32 { 1 }\n"})
