@@ -420,8 +420,17 @@ def format_coverage(data, cache=None):
                      ". Copies make names ambiguous, so calls to them stay unresolved.")
     if cache:
         lines.append(f"\nLocal scan cache: {cache['records']} file records, {cache['bytes'] / 1e6:.1f} MB in this workspace. It holds excerpts of scanned source.")
-    lines.append("\nRelationships between repositories are not mapped: an import or include that leaves this folder is recorded as written, with no target. "
-                 "A missing item here means it was not scanned or not recognized, not that it does not exist.")
+    crossing = coverage.get("cross_repository") or {"links": 0, "examples": []}
+    if coverage["nested_repositories"]:
+        lines.append(f"\nRelationships between repositories: this folder holds {len(coverage['nested_repositories'])} nested Git repositories, and "
+                     f"{crossing['links']} inferred links join files in different ones. They come from the same name and path rules as every other "
+                     "inferred link; no package manifest, build file, submodule pin or installed dependency was read, so treat them as leads to check.")
+        lines.extend("    " + example for example in crossing["examples"][:6])
+    else:
+        lines.append("\nRelationships between repositories are not mapped from a single-repository scan: an import or include that leaves this folder "
+                     "is recorded as written, with no target. Opening a parent folder that holds both repositories lets the name and path rules "
+                     "suggest links between them, as inferences.")
+    lines.append("A missing item here means it was not scanned or not recognized, not that it does not exist.")
     return "\n".join(lines)
 
 

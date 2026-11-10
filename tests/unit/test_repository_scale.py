@@ -299,6 +299,26 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual({row["name"]: (row["found"], row["inspected"]) for row in cov["top_level"]}, {"alpha": (6, 6), "beta": (6, 2)})
         self.assertTrue(any("only the first 8 supported source files" in w for w in data["warnings"]))
 
+    def test_links_between_nested_repositories_are_counted_and_stay_inferences(self):
+        from verifier_lab.elucidary_desktop import format_coverage
+        write(self.root, {"lib-repo/.git/HEAD": "ref: refs/heads/main\n", "lib-repo/canopy_lib/__init__.py": "",
+                          "lib-repo/canopy_lib/tool.py": "def shared(value):\n    return value\n",
+                          "app-repo/.git/HEAD": "ref: refs/heads/main\n",
+                          "app-repo/app.py": "from canopy_lib.tool import shared\nimport requests\ndef run():\n    return shared(1) + requests.get('x')\n"})
+        both = scan(self.root)
+        self.assertEqual(both["coverage"]["nested_repositories"], ["app-repo", "lib-repo"])
+        self.assertEqual(both["coverage"]["cross_repository"]["links"], 2)  # the module and the call
+        edge = calls(both, "function:app-repo/app.py:run")[("function:lib-repo/canopy_lib/tool.py:shared", "inferred")]
+        self.assertIn("import path used at run time was not checked", edge["basis"])
+        text = format_coverage(both)
+        self.assertIn("2 inferred links join files in different ones", text); self.assertIn("no package manifest", text)
+        # Scanned alone, the application records the import and the call as written and suggests no target.
+        alone = scan(self.root / "app-repo")
+        self.assertFalse([e for e in alone["edges"] if e["evidence"] == "inferred"])
+        run = next(n for n in alone["nodes"] if n["id"] == "function:app.py:run")
+        self.assertEqual([c["resolution"] for c in run["call_sites"]], ["unresolved", "unresolved"])
+        self.assertIn("not mapped from a single-repository scan", format_coverage(alone))
+
     def test_generated_and_text_classification(self):
         self.assertEqual(looks_generated("x.min.js", b"a"), "generated-file name")
         self.assertEqual(looks_generated("x.py", b"# DO NOT EDIT\n"), "generated-file header")

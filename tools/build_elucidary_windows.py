@@ -2,15 +2,22 @@
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
+import importlib.metadata
 import importlib.util
+import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("esprima", "tree_sitter", "tree_sitter_typescript", "tree_sitter_cpp")
-DIST_PREFIXES = ("esprima-", "tree_sitter-", "tree_sitter_typescript-", "tree_sitter_cpp-")
+PACKAGES = ("esprima", "tree_sitter", "tree_sitter_typescript", "tree_sitter_cpp", "tree_sitter_c", "tree_sitter_c_sharp", "tree_sitter_rust")
+DIST_PREFIXES = ("esprima-", "tree_sitter-", "tree_sitter_typescript-", "tree_sitter_cpp-", "tree_sitter_c-", "tree_sitter_c_sharp-", "tree_sitter_rust-")
+# Left out of the desktop folder: the browser workbench and the experimental exchange and isolation prototypes.
+EXCLUDED = ("__pycache__", "*.pyc", "server.py", "cli.py", "web", "file_exchange.py", "graph_reply_schema.py",
+            "windows_reply_guard.py", "windows_acl_plan.py")
 BOOTSTRAP = """from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'app'))
@@ -19,7 +26,18 @@ raise SystemExit(main())
 """
 
 
-def build(output: Path):
+def _source_revision():
+    """The commit the folder was built from, and whether the working tree differed from it."""
+    try:
+        commit = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        dirty = bool(subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--", "src", "tools"],
+                                    capture_output=True, text=True, check=True).stdout.strip())
+        return commit, dirty
+    except (OSError, subprocess.CalledProcessError):
+        return None, None
+
+
+def build(output: Path, label: str | None = None):
     if sys.platform != "win32":
         raise ValueError("This builder requires a Windows Python runtime")
     output = output.absolute()
@@ -52,21 +70,34 @@ def build(output: Path):
             if entry.is_dir() and entry.name.endswith(".dist-info") and entry.name.startswith(DIST_PREFIXES):
                 shutil.copytree(entry, site / entry.name, dirs_exist_ok=True)
     app = output / "app"; app.mkdir()
-    shutil.copytree(ROOT / "src" / "verifier_lab", app / "verifier_lab",
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "server.py", "cli.py", "web", "file_exchange.py", "graph_reply_schema.py", "windows_reply_guard.py", "windows_acl_plan.py"))
+    shutil.copytree(ROOT / "src" / "verifier_lab", app / "verifier_lab", ignore=shutil.ignore_patterns(*EXCLUDED))
     shutil.copy2(ROOT / "LICENSE", output / "LICENSE")
     (output / "run.pyw").write_text(BOOTSTRAP, encoding="utf-8")
     subprocess.run([compiler, "-O2", "-static", "-municode", "-mwindows", str(ROOT / "tools" / "elucidary_windows_launcher.c"),
                     "-o", str(output / "Elucidary.exe")], check=True)
+    commit, dirty = _source_revision()
+    modules = sorted(path for path in (app / "verifier_lab").rglob("*.py"))
+    digest = hashlib.sha256()
+    for path in modules:
+        digest.update(path.relative_to(app).as_posix().encode("utf-8") + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+    (output / "BUILD.json").write_text(json.dumps({
+        "label": label, "built_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_commit": commit, "source_tree_differed_from_commit": dirty,
+        "application_modules": len(modules), "application_sha256": digest.hexdigest(),
+        "python": sys.version.split()[0],
+        "bundled_parsers": {name: importlib.metadata.version(name.replace("_", "-")) for name in PACKAGES},
+        "signed": False, "note": "Local unsigned build. Parsing on Windows is for trusted repositories only; no parser sandbox and no local model are included.",
+    }, indent=1), encoding="utf-8")
     return output
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--label", help="a name for this build, recorded in BUILD.json")
     args = parser.parse_args()
     try:
-        print(build(args.output))
+        print(build(args.output, args.label))
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"Desktop build failed: {exc}", file=sys.stderr)
         return 1

@@ -27,6 +27,9 @@ DATA_FILES = {
     'verifier_lab/third_party/tree-sitter-python-LICENSE.txt',
     'verifier_lab/third_party/tree-sitter-typescript-LICENSE.txt',
     'verifier_lab/third_party/tree-sitter-cpp-LICENSE.txt',
+    'verifier_lab/third_party/tree-sitter-c-LICENSE.txt',
+    'verifier_lab/third_party/tree-sitter-c-sharp-LICENSE.txt',
+    'verifier_lab/third_party/tree-sitter-rust-LICENSE.txt',
     'verifier_lab/riskpacks_data/synthetic-upload-controls.json',
     'verifier_lab/purposes_data/inspect-checkpoint.json', 'verifier_lab/purposes_data/resume-exactly.json',
 }

@@ -245,7 +245,7 @@ def _walk(root: Path, limits: ScanLimits, cover: _Coverage, cancelled, progress)
                 cover.skip("vendor_or_build_directory", rel)
             else:
                 kept.append(name)
-                if limits.list_unparsed_files and len(cover.nested) < 60 and (base / name / ".git").exists():
+                if limits.list_unparsed_files and len(cover.nested) < 500 and (base / name / ".git").exists():
                     cover.nested.append(rel)
         dirs[:] = kept
         for name in sorted(names):
@@ -933,6 +933,23 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
     if cache is not None:
         cache.touch(cache_keys)
     duplicates = [paths for paths in digests.values() if len(paths) > 1]
+    # Inferred links whose two ends lie in different nested Git repositories of the selected folder.
+    crossing, crossing_examples, homes = 0, [], {}
+    if cover.nested:
+        nested_roots = sorted(cover.nested, key=len, reverse=True)
+
+        def home(path):
+            if path not in homes:
+                homes[path] = next((r for r in nested_roots if path == r or path.startswith(r + "/")), "")
+            return homes[path]
+        for edge in edges:
+            if edge["evidence"] != "inferred" or edge["kind"] not in ("possible call", "possible local module"):
+                continue
+            source, target = node_by_id.get(edge["source"]), node_by_id.get(edge["target"])
+            if source and target and source.get("path") and target.get("path") and home(source["path"]) != home(target["path"]):
+                crossing += 1
+                if len(crossing_examples) < MAX_EXAMPLES:
+                    crossing_examples.append(f"{source['path']}:{edge.get('line')} -> {target['path']} ({edge['kind']})")
     inventory = sorted((n["path"], n["sha256"]) for n in nodes if n["kind"] == "file" and n["sha256"])
     nodes[0]["fingerprint"] = hashlib.sha256(json.dumps([inventory, warnings], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
     finished = time.monotonic()
@@ -948,6 +965,7 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
         "unsupported_files": sum(cover.unsupported.values()),
         "top_level": [{"name": name, "found": found, "inspected": seen} for name, (found, seen) in sorted(cover.top.items())],
         "nested_repositories": cover.nested,
+        "cross_repository": {"links": crossing, "examples": crossing_examples},
         "duplicate_content": {"groups": len(duplicates), "files": sum(len(paths) for paths in duplicates),
                               "examples": [paths[:4] for paths in duplicates[:MAX_EXAMPLES]]},
         "cache": {"reused": sum(bool(r.get("from_cache")) for r in records), "parsed_now": sum(r["status"] == "parsed" and not r.get("from_cache") for r in records)},
