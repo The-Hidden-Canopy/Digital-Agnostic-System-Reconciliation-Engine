@@ -18,6 +18,7 @@ _ERRORS = {"invalid or overly complex Python source", "JavaScript parser unavail
            "unsupported or invalid JavaScript syntax", "language parser unavailable; install the languages extra",
            "invalid or overly complex source"}
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_PYTHON_SYNTAX = re.compile(r"Python syntax this parser does not accept( near line \d{1,7})?")
 
 
 def validate_graph_result(result, fmt, data, path):
@@ -58,13 +59,14 @@ def validate_graph_result(result, fmt, data, path):
     if fmt not in _LANGUAGES or not isinstance(data, bytes) or not isinstance(path, str) or not path:
         reject()
     if isinstance(result, dict) and set(result) == {"error"}:
-        if not isinstance(result["error"], str) or result["error"] not in _ERRORS:
+        if not isinstance(result["error"], str) or not (result["error"] in _ERRORS or _PYTHON_SYNTAX.fullmatch(result["error"])):
             reject()
         return result
     required = {"nodes", "edges", "imports", "calls", "top_level", "truncated"}
     if fmt != "repository-python": required.add("exports")
     if fmt in {"repository-typescript", "repository-tsx", "repository-jsx", "repository-cpp"}: required.add("partial")
-    fields(result, required)
+    # JavaScript is read by the tree grammar when it is installed and by the older parser otherwise.
+    fields(result, required, {"members", "qualified", "partial"} if fmt != "repository-python" else {"members"})
     boolean(result["truncated"])
     if "partial" in result: boolean(result["partial"])
     try:
@@ -89,7 +91,8 @@ def validate_graph_result(result, fmt, data, path):
         for key in ("parameters_truncated", "returns_truncated", "features_truncated"): boolean(value[key])
         if value["async"] is not None: boolean(value["async"])
         if value["parameter_detail"] not in ("named", "named_or_pattern"): reject()
-        if value["return_detail"] not in ("explicit", "explicit_only_arrow_expressions_excluded"): reject()
+        if value["return_detail"] not in ("explicit", "explicit_only_arrow_expressions_excluded",
+                                          "explicit_only_expression_bodies_excluded", "explicit_only_tail_expressions_excluded"): reject()
         sequence(value["parameters"], 30); sequence(value["return_lines"], 30)
         sequence(value["features"], 30); sequence(value["evidence_lines"], 20)
         for param in value["parameters"]:
@@ -111,7 +114,7 @@ def validate_graph_result(result, fmt, data, path):
             source_line(item["text"], item["line"], 500)
             if item["truncated"] != (len(lines[item["line"] - 1]) > 500): reject()
 
-    for key, limit in (("nodes", 600), ("edges", 600), ("imports", 3000), ("calls", 3000)):
+    for key, limit in (("nodes", 4000), ("edges", 4000), ("imports", 4000), ("calls", 20000)):
         sequence(result[key], limit)
     ids = {}
     for node in result["nodes"]:
@@ -152,7 +155,9 @@ def validate_graph_result(result, fmt, data, path):
         common = {"id", "line", "snippet"}
         required_import = ({"module", "level", "symbol", "bound", "aliased"} if fmt == "repository-python" else
                            {"source", "local"} if fmt == "repository-cpp" else {"source", "bound", "symbol", "namespace"})
-        fields(imp, common | required_import); string(imp["id"])
+        fields(imp, common | required_import, {"commonjs"} if fmt not in ("repository-python", "repository-cpp") else ())
+        string(imp["id"])
+        if "commonjs" in imp: boolean(imp["commonjs"])
         node = ids.get(imp["id"])
         if not node or node["kind"] != "dependency" or node["line"] != imp["line"]: reject()
         source_line(imp["snippet"], imp["line"])
@@ -167,8 +172,12 @@ def validate_graph_result(result, fmt, data, path):
                 for key in ("symbol", "bound"): string(imp[key], nullable=True)
 
     for call in result["calls"]:
-        fields(call, {"caller", "base", "attribute", "written", "written_truncated", "written_arguments", "line", "snippet", "snippet_truncated", "line_sha256"})
+        fields(call, {"caller", "base", "attribute", "written", "written_truncated", "written_arguments", "line", "snippet", "snippet_truncated", "line_sha256"},
+               {"member", "member_of", "scope"})
         string(call["caller"]); string(call["written"])
+        for key in ("member", "member_of", "scope"):
+            if key in call: string(call[key])
+        if ("member" in call) != ("member_of" in call): reject()
         for key in ("base", "attribute"): string(call[key], nullable=True)
         if call["caller"] != file_id and (call["caller"] not in ids or ids[call["caller"]]["kind"] != "function"): reject()
         if len(call["written"]) > 200: reject()
@@ -178,13 +187,24 @@ def validate_graph_result(result, fmt, data, path):
         source = lines[call["line"] - 1]
         if call["snippet_truncated"] != (len(source) > 1000) or call["line_sha256"] != hashlib.sha256(source.encode("utf-8")).hexdigest(): reject()
 
-    for key in ("top_level", "exports"):
+    def references_functions(references):
+        sequence(references, 4000)
+        for reference in references:
+            string(reference)
+            if reference not in ids or ids[reference]["kind"] != "function": reject()
+
+    members = result.get("members", {})
+    if not isinstance(members, dict) or len(members) > 4000: reject()
+    for owner, methods in members.items():
+        string(owner)
+        if not isinstance(methods, dict) or len(methods) > 4000: reject()
+        for name, references in methods.items():
+            string(name); references_functions(references)
+
+    for key in ("top_level", "exports", "qualified"):
         if key not in result: continue
         mapping = result[key]
-        if not isinstance(mapping, dict) or len(mapping) > 600: reject()
+        if not isinstance(mapping, dict) or len(mapping) > 4000: reject()
         for name, references in mapping.items():
-            string(name); sequence(references, 600)
-            for reference in references:
-                string(reference)
-                if reference not in ids or ids[reference]["kind"] != "function": reject()
+            string(name); references_functions(references)
     return result

@@ -10,6 +10,18 @@ def evidence_lines(lines, numbers):
     return [{"line": n, "text": lines[n - 1][:500], "truncated": len(lines[n - 1]) > 500} for n in points[:20]]
 
 
+def _incident(edges, node_id):
+    """Connections touching one item, from a scan index when given, else by reading the edge list."""
+    lookup = getattr(edges, "incident", None)
+    if lookup is not None:
+        return lookup(node_id)
+    return [e for e in edges if e["source"] == node_id or e["target"] == node_id]
+
+
+def _nodes_by_id(nodes):
+    return nodes if isinstance(nodes, dict) else {node["id"]: node for node in nodes}
+
+
 def explain_unresolved_call(call, level):
     """Explain a lack of static resolution without claiming the target is absent."""
     if level == "beginner":
@@ -77,7 +89,7 @@ def reading_challenges(node, level):
             add("return", prompt, f"Line {number}: {snippet(line['text'])}", f"Line {start}: {snippet(header)}", line,
                 "This is a recorded return statement. The scan does not establish whether it ran or what value it returned.")
             break
-    constructs = {"conditional": ("choice", r"\bif\b"), "loop": ("loop", r"\b(?:for|while|do)\b"),
+    constructs = {"conditional": ("choice", r"\bif\b"), "loop": ("loop", r"\b(?:for|foreach|while|do|loop)\b"),
                   "selection": ("selection", r"\bswitch\b"), "pattern match": ("pattern match", r"\bmatch\b"),
                   "exception handling": ("try block", r"\btry\b"), "raise": ("raised error", r"\b(?:raise|throw)\b"),
                   "await": ("await expression", r"\b(?:await|co_await)\b")}
@@ -103,6 +115,8 @@ def explain(node, edges, topic, level):
     facts, links, citations, call_sites = [], [], [], []
     shape = node.get("shape")
     if topic == "overview":
+        if node.get("parse_note"):
+            facts.append(node["parse_note"])
         if node["kind"] == "function":
             facts.append("This item is a function definition found in the scanned source.")
             if level == "beginner":
@@ -160,6 +174,10 @@ def explain(node, edges, topic, level):
                 facts.append("The list of return locations was truncated.")
             if shape.get("return_detail") == "explicit_only_arrow_expressions_excluded":
                 facts.append("An expression-bodied arrow function may return without a return statement.")
+            elif shape.get("return_detail") == "explicit_only_tail_expressions_excluded":
+                facts.append("A Rust function can return its final expression without a return statement; those are not listed.")
+            elif shape.get("return_detail") == "explicit_only_expression_bodies_excluded":
+                facts.append("An expression-bodied member (=>) returns without a return statement; those are not listed.")
             facts.append("These locations do not show which branch ran or what value was returned.")
     elif topic == "calls":
         recorded = node.get("call_sites")
@@ -197,7 +215,7 @@ def explain(node, edges, topic, level):
                 facts.append("The construct list was truncated; inspect the source for the rest.")
             facts.append("A construct appearing in source does not prove it ran.")
     else:
-        nearby = [e for e in edges if e["source"] == node["id"] or e["target"] == node["id"]]
+        nearby = _incident(edges, node["id"])
         facts.append(f"The scan recorded {len(nearby)} connections for this item; the list below shows up to 20.")
         if level == "beginner":
             facts.append("A connection is a link found in source or a possible link inferred from it.")
@@ -291,38 +309,51 @@ def compare_call_with_target(call, target, level):
     }
 
 
+MAX_PATH_SEARCH_ITEMS = 60_000
+
+
 def path_between_items(nodes, edges, start_id, target_id, level, include_inferred, include_organization, *, labeled=False):
     """Find a bounded undirected exploration path while preserving each edge's direction."""
-    by_id = {n["id"]: n for n in nodes}
+    by_id = _nodes_by_id(nodes)
     if start_id not in by_id or target_id not in by_id:
         raise ValueError("path endpoints must belong to the current scan")
-    adjacency = {ident: [] for ident in by_id}
-    for edge in edges:
-        a, b = edge.get("source"), edge.get("target")
-        if a not in by_id or b not in by_id or edge.get("evidence") not in ("static", "inferred"):
-            continue
-        if edge["evidence"] == "inferred" and not include_inferred:
-            continue
-        if not include_organization and edge.get("kind") in ("contains", "defines"):
-            continue
-        adjacency[a].append((b, edge, "forward"))
-        adjacency[b].append((a, edge, "reverse"))
-    for neighbors in adjacency.values():
-        neighbors.sort(key=lambda x: (x[1]["evidence"] != "static", x[0], x[1].get("kind", ""), x[1].get("line") or 0, x[2]))
-    queue, parent = [(start_id, 0)], {start_id: None}
+
+    def adjacent(ident):
+        """This item's usable links, in the same order whether read from an index or an edge list."""
+        found = []
+        for edge in _incident(edges, ident):
+            a, b = edge.get("source"), edge.get("target")
+            if a not in by_id or b not in by_id or edge.get("evidence") not in ("static", "inferred"):
+                continue
+            if edge["evidence"] == "inferred" and not include_inferred:
+                continue
+            if not include_organization and edge.get("kind") in ("contains", "defines"):
+                continue
+            if a == ident:
+                found.append((b, edge, "forward"))
+            if b == ident:
+                found.append((a, edge, "reverse"))
+        found.sort(key=lambda x: (x[1]["evidence"] != "static", x[0], x[1].get("kind", ""), x[1].get("line") or 0, x[2]))
+        return found
+    queue, parent, explored = [(start_id, 0)], {start_id: None}, 0
     for current, distance in queue:
         if current == target_id:
             break
         if distance >= 8:
             continue
-        for other, edge, direction in adjacency[current]:
+        explored += 1
+        if explored > MAX_PATH_SEARCH_ITEMS:
+            break
+        for other, edge, direction in adjacent(current):
             if other not in parent:
                 parent[other] = (current, edge, direction)
                 queue.append((other, distance + 1))
     limit = "This is an exploration path through the scanned graph, not a runtime trace. Reverse steps do not reverse the source relationship."
     if target_id not in parent:
         return {"status": "unavailable", "goal": "label" if labeled else "item", "steps": [],
-                "message": "No path was found within eight links using these choices. Try including other connection types or choose another item.",
+                "message": ("The search stopped after visiting many items without reaching the destination; a path may still exist. "
+                            if explored > MAX_PATH_SEARCH_ITEMS else "") +
+                           "No path was found within eight links using these choices. Try including other connection types or choose another item.",
                 "limitation": limit + " Unscanned or unresolved relationships are not included."}
     segments, current = [], target_id
     while parent[current] is not None:
@@ -376,16 +407,19 @@ def path_to_label(nodes, edges, start_id, target_id, level, include_inferred, in
     return path_between_items(nodes, edges, start_id, target_id, level, include_inferred, include_organization, labeled=True)
 
 
-def possible_callers(nodes, target_id, level, max_depth=1, limit=60):
+def possible_callers(nodes, target_id, level, max_depth=1, limit=60, index=None):
     """Trace bounded possible callers using recorded call sites, never runtime traces."""
     if (level not in ("beginner", "explore", "technical") or type(max_depth) is not int or
             not 1 <= max_depth <= 3 or type(limit) is not int or not 1 <= limit <= 60):
         raise ValueError("invalid caller exploration")
-    by_id = {node["id"]: node for node in nodes}
+    by_id = _nodes_by_id(index.nodes if index is not None else nodes)
     if target_id not in by_id or by_id[target_id].get("kind") != "function":
         raise ValueError("select a function in this scan")
     reverse, unresolved, partial = {}, 0, False
-    for caller in nodes:
+    if index is not None:
+        # Built once per scan from every inferred call edge, so long call lists are not cut short.
+        reverse, unresolved, partial = index.callers, index.unresolved_calls, not index.complete
+    for caller in (() if index is not None else nodes):
         if caller.get("kind") not in ("file", "function"): continue
         partial = partial or bool(caller.get("call_sites_truncated"))
         for call in caller.get("call_sites", []):
@@ -396,7 +430,7 @@ def possible_callers(nodes, target_id, level, max_depth=1, limit=60):
             via = {key: call.get(key) for key in ("written", "path", "line", "snippet", "snippet_truncated", "sha256", "basis")}
             via.update({"source": caller["id"], "target": target, "evidence": "inferred", "call_evidence": "static"})
             reverse.setdefault(target, []).append(via)
-    for sites in reverse.values():
+    for sites in (() if index is not None else reverse.values()):
         sites.sort(key=lambda item: (item.get("path") or "", item.get("line") or 0, item["source"], item.get("written") or ""))
     prompts = {"beginner": "Find the written call. A possible target does not prove the call ran.",
                "explore": "Compare the call with its possible target and consider what could change the match.",
@@ -418,22 +452,35 @@ def possible_callers(nodes, target_id, level, max_depth=1, limit=60):
                           "A call site's presence does not prove execution or that a change affects a caller."}
 
 
-def guided_path(nodes, edges, start_id, goal, level, prefer_unreviewed):
-    """Build a bounded path from recorded graph edges without inventing execution."""
-    by_id = {node["id"]: node for node in nodes}
+def guided_path(nodes, edges, start_id, goal, level, prefer_unreviewed, reviewed=None):
+    """Build a bounded path from recorded graph edges without inventing execution.
+
+    reviewed, when given, maps an item id to its current review mark; otherwise the items' own fields are used.
+    """
+    by_id = _nodes_by_id(nodes)
     if start_id not in by_id:
         raise ValueError("start item is not in this scan")
-    outgoing, incoming = {}, {}
-    for edge in edges:
-        if edge["source"] not in by_id or edge["target"] not in by_id:
-            continue
-        outgoing.setdefault(edge["source"], []).append(edge)
-        incoming.setdefault(edge["target"], []).append(edge)
+
+    class _Links:
+        """Edges leaving or entering one item, limited to items in this scan."""
+        def __init__(self, end):
+            self.end, self.cache = end, {}
+
+        def get(self, node_id, default=()):
+            if node_id not in self.cache:
+                self.cache[node_id] = [e for e in _incident(edges, node_id) if e[self.end] == node_id and
+                                       e["source"] in by_id and e["target"] in by_id]
+            return self.cache[node_id] or default
+    outgoing, incoming = _Links("source"), _Links("target")
+
+    def is_reviewed(node):
+        if reviewed is not None:
+            return bool(reviewed(node["id"]))
+        return bool(node.get("reviewed") and not node.get("review_needs_refresh"))
 
     def rank(edge, direction):
         other = by_id[edge["target"] if direction == "forward" else edge["source"]]
-        reviewed = bool(other.get("reviewed") and not other.get("review_needs_refresh"))
-        return (int(reviewed) if prefer_unreviewed else 0, other["id"], edge["kind"], edge.get("line") or 0)
+        return (int(is_reviewed(other)) if prefer_unreviewed else 0, other["id"], edge["kind"], edge.get("line") or 0)
 
     def options(node_id):
         choices = []
@@ -464,6 +511,8 @@ def guided_path(nodes, edges, start_id, goal, level, prefer_unreviewed):
     for node_id, path in queue:
         if shortest is not None and len(path) > shortest:
             break
+        if len(seen) > MAX_PATH_SEARCH_ITEMS and matches:
+            break
         if finished(node_id):
             shortest = len(path)
             matches.append((node_id, path))
@@ -479,8 +528,7 @@ def guided_path(nodes, edges, start_id, goal, level, prefer_unreviewed):
         def match_rank(pair):
             node_id = pair[0]
             resolved = any(e["kind"] in ("possible call", "possible target") and e["evidence"] == "inferred" for e in outgoing.get(node_id, []))
-            reviewed = bool(by_id[node_id].get("reviewed") and not by_id[node_id].get("review_needs_refresh"))
-            return (int(not resolved) if goal == "calls" else 0, int(reviewed) if prefer_unreviewed else 0)
+            return (int(not resolved) if goal == "calls" else 0, int(is_reviewed(by_id[node_id])) if prefer_unreviewed else 0)
         matches.sort(key=match_rank)
     chosen = matches[0] if matches else None
     if chosen is None:

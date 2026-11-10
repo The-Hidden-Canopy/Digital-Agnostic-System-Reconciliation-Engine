@@ -77,21 +77,49 @@ class Service:
         self.repository_content_access: dict = {}
         self.repository_assistant_permitted: dict = {}
         self.repository_roots: dict = {}
+        self.repository_indexes: dict = {}
+        self.repository_cache = None
         self.local_assistant = local_assistant
         self._recover()
 
     def close(self):
         self.executor.shutdown(wait=True, cancel_futures=False)
+        if self.repository_cache is not None:
+            self.repository_cache.close()
         self.store.close()
 
-    def repository_map(self, path: str, content_access: str = "internal") -> dict:
-        from .repository_map import scan_repository
+    def _scan_cache(self):
+        """Opened on first use; a cache that cannot be opened only costs speed."""
+        if self.repository_cache is None:
+            from .repository_cache import ParseCache
+            try:
+                self.repository_cache = ParseCache(self.store.root / "scan-cache.db")
+            except Exception:
+                return None
+        return self.repository_cache
+
+    def repository_cache_status(self):
+        cache = self._scan_cache()
+        return cache.stats() if cache else {"records": 0, "bytes": 0}
+
+    def repository_cache_clear(self):
+        cache = self._scan_cache()
+        if cache:
+            cache.clear()
+        return {"cleared": True}
+
+    def repository_map(self, path: str, content_access: str = "internal", *, scan_limits=None,
+                       progress=None, should_cancel=None, use_cache=False) -> dict:
+        from .repository_map import ScanCancelled, scan_repository
         if not isinstance(path, str) or not path.strip() or len(path) > 4096:
             raise ServiceError(422, "bad_repository_path", "Enter a local directory path")
         if content_access not in ("internal", "adult", "adult_reviewed"):
             raise ServiceError(403, "adult_review_required")
         try:
-            result = scan_repository(path, limits=self.limits)
+            result = scan_repository(path, limits=self.limits, scan_limits=scan_limits, progress=progress,
+                                     should_cancel=should_cancel, cache=self._scan_cache() if use_cache else None)
+        except ScanCancelled as exc:
+            raise ServiceError(409, "scan_cancelled", "The scan was stopped. Nothing from it was kept.") from exc
         except ExtractionFailure as exc:
             raise ServiceError(503, exc.code, str(exc)) from exc
         except (OSError, ValueError) as exc:
@@ -119,10 +147,13 @@ class Service:
                 "FROM repository_projects p WHERE p.project_id<>? AND "
                 "(EXISTS(SELECT 1 FROM repository_labels l WHERE l.repo_id=p.project_id) OR "
                 " EXISTS(SELECT 1 FROM repository_progress v WHERE v.repo_id=p.project_id)) ORDER BY p.name,p.project_id", (result["repo_id"],))]
+            from .repository_index import RepositoryIndex
             nodes = {n["id"]: n for n in result["nodes"]}
             result["scan_id"] = secrets.token_urlsafe(18)
             self.repository_snapshots[result["repo_id"]] = nodes
             self.repository_edges[result["repo_id"]] = result["edges"]
+            self.repository_indexes[result["repo_id"]] = RepositoryIndex(
+                nodes, result["edges"], complete=not any(w.startswith("Connection limit reached") for w in result["warnings"]))
             self.repository_scan_ids[result["repo_id"]] = result["scan_id"]
             self.repository_content_access[result["repo_id"]] = content_access
             self.repository_roots[result["repo_id"]] = (location_id, str(canonical))
@@ -154,11 +185,16 @@ class Service:
                 node["label_needs_review"] = bool(anchor and anchor["fingerprint"] and node.get("fingerprint") and
                                                   anchor["fingerprint"] != node["fingerprint"])
             result["unmatched_labels"] = []
+            by_fingerprint = None
             for row in rows:
                 if row["node_id"] in nodes:
                     continue
-                matches = [n for n in nodes.values() if row["fingerprint"] and
-                           n.get("fingerprint") == row["fingerprint"] and n["kind"] == row["kind"] and not n["label"]]
+                if by_fingerprint is None:  # built only when a saved label has lost its item
+                    by_fingerprint = {}
+                    for n in nodes.values():
+                        if n.get("fingerprint"):
+                            by_fingerprint.setdefault((n["fingerprint"], n["kind"]), []).append(n)
+                matches = [n for n in by_fingerprint.get((row["fingerprint"], row["kind"]), []) if not n["label"]] if row["fingerprint"] else []
                 result["unmatched_labels"].append({"node_id": row["node_id"], "label": row["label"],
                     "kind": row["kind"], "path": row["path"], "name": row["name"],
                     "suggested_node_id": matches[0]["id"] if len(matches) == 1 else None})
@@ -259,6 +295,7 @@ class Service:
             self.repository_content_access.pop(current, None)
             self.repository_assistant_permitted.pop(current, None)
             self.repository_roots.pop(current, None)
+            self.repository_indexes.pop(current, None)
         return {"project_id": project_id}
 
     def repository_practice(self, repo_id, node_id, answer, scan_id, activity="call"):
@@ -271,7 +308,9 @@ class Service:
         kind, correct, explanation = activities[activity]
         with self.store.lock:
             self._check_repository_scan(repo_id, scan_id)
-            edge = next((e for e in self.repository_edges.get(repo_id, []) if (e["kind"] == kind or (activity == "import" and e["kind"] == "includes")) and e["evidence"] == ("inferred" if activity == "call" else "static") and
+            index = self.repository_indexes.get(repo_id)
+            near = index.incident(node_id) if index else self.repository_edges.get(repo_id, [])
+            edge = next((e for e in near if (e["kind"] == kind or (activity == "import" and e["kind"] == "includes")) and e["evidence"] == ("inferred" if activity == "call" else "static") and
                          (e["source"] == node_id if activity == "call" else e["target"] == node_id)), None)
         if not edge:
             raise ServiceError(409, "stale_repository", "Rescan and select an item with the relevant source evidence")
@@ -343,7 +382,7 @@ class Service:
             node = self.repository_snapshots.get(repo_id, {}).get(node_id)
             if not node:
                 raise ServiceError(409, "stale_repository", "Select an item in the current scan")
-            edges = list(self.repository_edges.get(repo_id, []))
+            edges = self.repository_indexes.get(repo_id) or list(self.repository_edges.get(repo_id, []))
         from .repository_learning import explain_with_provider
         result = explain_with_provider(node, edges, topic, level)
         if use_local_assistant:
@@ -382,19 +421,19 @@ class Service:
             nodes = self.repository_snapshots.get(repo_id, {})
             if node_id not in nodes:
                 raise ServiceError(409, "stale_repository", "Select an item in the current scan")
-            edges = list(self.repository_edges.get(repo_id, []))
+            edges = self.repository_indexes.get(repo_id) or list(self.repository_edges.get(repo_id, []))
             # Review marks may change without a rescan; read the current local choices.
             marks = {r["node_id"]: r["fingerprint"] for r in self.store.q(
                 "SELECT node_id,fingerprint FROM repository_progress WHERE repo_id=?", (repo_id,))}
-            copied = []
-            for node in nodes.values():
-                item = dict(node)
-                digest = item.get("sha256") or item.get("fingerprint")
-                item["reviewed"] = item["id"] in marks
-                item["review_needs_refresh"] = bool(item["reviewed"] and marks[item["id"]] and digest and marks[item["id"]] != digest)
-                copied.append(item)
+
+        def reviewed(ident):
+            """A current mark: saved for this item and still matching the scanned source."""
+            if ident not in marks:
+                return False
+            digest = nodes[ident].get("sha256") or nodes[ident].get("fingerprint")
+            return not (marks[ident] and digest and marks[ident] != digest)
         from .repository_learning import guided_path
-        return guided_path(copied, edges, node_id, goal, level, prefer_unreviewed)
+        return guided_path(nodes, edges, node_id, goal, level, prefer_unreviewed, reviewed=reviewed)
 
     def repository_label_path(self, repo_id, node_id, target_id, level, include_inferred, include_organization, scan_id):
         return self._repository_path(repo_id, node_id, target_id, level, include_inferred, include_organization, scan_id, require_label=True)
@@ -416,9 +455,9 @@ class Service:
                 label = self.store.q1("SELECT label FROM repository_labels WHERE repo_id=? AND node_id=?", (repo_id, target_id))
                 if not label:
                     raise ServiceError(409, "label_unavailable", "Save a label on this item before using it as a destination")
-            copied, edges = [dict(n) for n in nodes.values()], list(self.repository_edges.get(repo_id, []))
+            edges = self.repository_indexes.get(repo_id) or list(self.repository_edges.get(repo_id, []))
         from .repository_learning import path_between_items
-        return path_between_items(copied, edges, node_id, target_id, level, include_inferred, include_organization, labeled=require_label)
+        return path_between_items(nodes, edges, node_id, target_id, level, include_inferred, include_organization, labeled=require_label)
 
     def repository_possible_callers(self, repo_id, node_id, level, max_depth, scan_id):
         if (not isinstance(node_id, str) or level not in ("beginner", "explore", "technical") or
@@ -429,9 +468,98 @@ class Service:
             nodes = self.repository_snapshots.get(repo_id, {})
             if node_id not in nodes or nodes[node_id].get("kind") != "function":
                 raise ServiceError(409, "caller_unavailable", "Select a function in the current scan")
-            copied = [dict(node) for node in nodes.values()]
+            index = self.repository_indexes.get(repo_id)
         from .repository_learning import possible_callers
-        return possible_callers(copied, node_id, level, max_depth)
+        return possible_callers(nodes, node_id, level, max_depth, index=index)
+
+    # Reading a file again is allowed only to show text whose bytes still match the scan.
+    MAX_SOURCE_VIEW_BYTES, MAX_SOURCE_VIEW_LINES, MAX_SOURCE_VIEW_LINE_CHARS = 2_000_000, 20_000, 2000
+
+    def _repository_file_text(self, repo_id, file_node):
+        """(status, text). status is current, changed or unavailable; text is None unless current."""
+        from .repository_map import _read_source, normalize_source
+        root = self.repository_roots.get(repo_id, (None, None))[1]
+        if not root or not file_node.get("sha256"):
+            return "unavailable", None
+        try:
+            raw = _read_source(Path(root), Path(*file_node["path"].split("/")), self.MAX_SOURCE_VIEW_BYTES)
+        except (OSError, ValueError):
+            return "unavailable", None
+        if len(raw) > self.MAX_SOURCE_VIEW_BYTES or hashlib.sha256(raw).hexdigest() != file_node["sha256"]:
+            return "changed", None
+        data, _ = normalize_source(raw)
+        if data is None:
+            return "unavailable", None
+        return "current", data.decode("utf-8-sig")
+
+    def repository_source(self, repo_id, node_id, scan_id):
+        """The scanned file's full text, shown only while its bytes still match the scan."""
+        if not isinstance(node_id, str):
+            raise ServiceError(422, "bad_source_request")
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            nodes = self.repository_snapshots.get(repo_id, {})
+            node = nodes.get(node_id)
+            file_node = nodes.get("file:" + str((node or {}).get("path") or ""))
+            if not node or not file_node:
+                raise ServiceError(409, "source_unavailable", "Select a file or an item inside a file")
+        status, text = self._repository_file_text(repo_id, file_node)
+        result = {"status": status, "path": file_node["path"], "sha256": file_node.get("sha256"), "lines": [], "truncated": False}
+        if text is not None:
+            lines = text.splitlines()
+            result["line_count"] = len(lines)
+            result["truncated"] = len(lines) > self.MAX_SOURCE_VIEW_LINES
+            result["lines"] = [line[:self.MAX_SOURCE_VIEW_LINE_CHARS] for line in lines[:self.MAX_SOURCE_VIEW_LINES]]
+            result["long_lines"] = any(len(line) > self.MAX_SOURCE_VIEW_LINE_CHARS for line in lines[:self.MAX_SOURCE_VIEW_LINES])
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+        return result
+
+    def repository_search_source(self, repo_id, query, scan_id, limit=200, should_cancel=None, progress=None, seconds=120):
+        """Find text in scanned files. Only files whose bytes still match the scan are searched."""
+        import time as _time
+        if not isinstance(query, str) or not 2 <= len(query.strip()) <= 200 or type(limit) is not int or not 1 <= limit <= 1000:
+            raise ServiceError(422, "bad_search_request", "Enter between 2 and 200 characters to search for")
+        needle = query.strip().casefold()
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+            nodes = self.repository_snapshots.get(repo_id, {})
+            index = self.repository_indexes.get(repo_id)
+            files = [n for n in nodes.values() if n["kind"] == "file"]
+        matches, searched, changed, unavailable, stopped = [], 0, 0, 0, None
+        deadline = _time.monotonic() + seconds
+        for position, file_node in enumerate(files):
+            if should_cancel is not None and should_cancel():
+                stopped = "cancelled"; break
+            if _time.monotonic() > deadline:
+                stopped = "time limit"; break
+            if len(matches) >= limit:
+                stopped = "result limit"; break
+            status, text = self._repository_file_text(repo_id, file_node)
+            if status == "changed":
+                changed += 1
+            elif status != "current":
+                unavailable += 1
+            if text is None:
+                continue
+            searched += 1
+            if needle in text.casefold():
+                for number, line in enumerate(text.splitlines(), 1):
+                    if needle in line.casefold():
+                        owner = index.enclosing(file_node["path"], number) if index else file_node["id"]
+                        matches.append({"path": file_node["path"], "line": number, "text": line.strip()[:300],
+                                        "truncated": len(line.strip()) > 300, "node_id": owner or file_node["id"],
+                                        "sha256": file_node["sha256"]})
+                        if len(matches) >= limit:
+                            break
+            if progress is not None and position % 50 == 0:
+                progress("Searching source", position, len(files), file_node["path"])
+        with self.store.lock:
+            self._check_repository_scan(repo_id, scan_id)
+        return {"query": query.strip(), "matches": matches, "files_searched": searched, "files_total": len(files),
+                "files_changed_since_scan": changed, "files_unavailable": unavailable, "stopped": stopped,
+                "limitation": "Text search over scanned files whose bytes still match the scan; case is ignored. "
+                              "A match is written text, not a relationship, and files that changed, were skipped or were not scanned are not searched."}
 
     def repository_compare_call(self, repo_id, node_id, call_index, level, scan_id):
         if not isinstance(node_id, str) or type(call_index) is not int or call_index < 0 or level not in ("beginner", "explore", "technical"):

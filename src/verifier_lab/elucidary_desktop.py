@@ -18,9 +18,13 @@ def default_workspace():
     return Path(base) / "Elucidary" if base else Path.home() / ".elucidary"
 
 
-def graph_view(nodes, edges, selected, route=(), limit=80, overview=False, focus_path=None, labeled=False):
-    """Select a bounded graph and lay it out in file clusters, with no inferred edges added."""
-    by_id = {n["id"]: n for n in nodes}
+def graph_view(nodes, edges, selected, route=(), limit=80, overview=False, focus_path=None, labeled=False, index=None):
+    """Select a bounded graph and lay it out in file clusters, with no inferred edges added.
+
+    With a scan index the choice costs the size of the neighbourhood shown, not of the repository;
+    nodes then only needs to hold the labeled items.
+    """
+    by_id = index.nodes if index is not None else {n["id"]: n for n in nodes}
     chosen, seen = [], set()
 
     def add(ident):
@@ -33,8 +37,10 @@ def graph_view(nodes, edges, selected, route=(), limit=80, overview=False, focus
         add(ident)
     limit = max(limit, len(chosen))
     if focus_path is not None:
-        same_file = sorted((node for node in nodes if node.get("path") == focus_path),
-                           key=lambda n: (n["kind"] != "file", not bool(n.get("label")), n["id"]))
+        members = (node for node in nodes if node.get("path") == focus_path)
+        if index is not None:
+            members = [by_id[i] for i in index.in_file(focus_path)] + ([by_id["file:" + focus_path]] if "file:" + focus_path in by_id else [])
+        same_file = sorted(members, key=lambda n: (n["kind"] != "file", not bool(n.get("label")), n["id"]))
         for node in same_file:
             if len(chosen) >= limit: break
             add(node["id"])
@@ -45,7 +51,7 @@ def graph_view(nodes, edges, selected, route=(), limit=80, overview=False, focus
             add(node["id"])
         # Give labeled items their immediate, already-recorded graph context.
         neighbors = {ident: set() for ident in chosen}
-        for edge in edges:
+        for edge in (edges if index is None else [e for ident in chosen for e in index.incident(ident) if graph_edge_shown(e, edges)]):
             a, b = edge.get("source"), edge.get("target")
             if a in neighbors and b in by_id: neighbors[a].add(b)
             if b in neighbors and a in by_id: neighbors[b].add(a)
@@ -55,11 +61,16 @@ def graph_view(nodes, edges, selected, route=(), limit=80, overview=False, focus
                 add(neighbor)
     elif overview and len(chosen) < limit:
         groups = {}
-        for node in nodes:
+        if index is not None:
+            # Only the first groups in path order can be reached before the limit.
+            for key in sorted(index.paths() + ["Repository"])[:limit]:
+                groups[key] = ([by_id["repo"]] if key == "Repository" and "repo" in by_id else
+                               [by_id[i] for i in ["file:" + key] + list(index.in_file(key)) if i in by_id])
+        for node in (nodes if index is None else ()):
             groups.setdefault(node.get("path") or "Repository", []).append(node)
         ordered = [sorted(group, key=lambda n: (not bool(n.get("label")), n["kind"] != "file", n["id"]))
                    for _, group in sorted(groups.items())]
-        for i in range(len(nodes)):
+        for i in range(max((len(group) for group in ordered), default=0)):
             found = False
             for group in ordered:
                 if i < len(group):
@@ -70,15 +81,21 @@ def graph_view(nodes, edges, selected, route=(), limit=80, overview=False, focus
             if not found or len(chosen) >= limit:
                 break
     elif not overview:
-        adjacent = {ident: [] for ident in by_id}
-        for edge in edges:
+        adjacent = {} if index is not None else {ident: [] for ident in by_id}
+        for edge in (edges if index is None else ()):
             a, b = edge.get("source"), edge.get("target")
             if a in adjacent and b in adjacent:
                 adjacent[a].append(b)
                 adjacent[b].append(a)
+
+        def around(ident):
+            if index is None:
+                return adjacent[ident]
+            return {(e["target"] if e["source"] == ident else e["source"]) for e in index.incident(ident)
+                    if graph_edge_shown(e, edges) and e["source"] in by_id and e["target"] in by_id}
         cursor = 0
         while cursor < len(chosen) and len(chosen) < limit:
-            for ident in sorted(adjacent[chosen[cursor]]):
+            for ident in sorted(around(chosen[cursor])):
                 add(ident)
                 if len(chosen) >= limit:
                     break
@@ -102,9 +119,14 @@ def graph_view(nodes, edges, selected, route=(), limit=80, overview=False, focus
     return chosen, positions
 
 
+def graph_edge_shown(edge, shown):
+    """With an index, the edges argument is the set of evidence classes to draw."""
+    return edge.get("evidence") in shown
+
+
 def graph_constellations(nodes, chosen, projected, selected, limit=12):
     """Bounded visual file groups; group boundaries do not assert relationships."""
-    groups, by_id = {}, {node["id"]: node for node in nodes}
+    groups, by_id = {}, (nodes if isinstance(nodes, dict) else {node["id"]: node for node in nodes})
     for ident in chosen:
         node = by_id[ident]; path = node.get("path")
         if path and ident in projected:
@@ -175,18 +197,24 @@ class DesktopController:
         self.selected = None
         self.audience = None
         self.route = None
+        self.index = None
+        self.scan_limits = None  # None: the desktop bounds for the chosen options
 
     def clear(self):
-        self.data, self.nodes, self.selected, self.audience, self.route = None, {}, None, None, None
+        self.data, self.nodes, self.selected, self.audience, self.route, self.index = None, {}, None, None, None, None
 
-    def open(self, path, audience, isolation, baseline=None):
+    def open(self, path, audience, isolation, baseline=None, *, progress=None, should_cancel=None,
+             include_vendored=False, include_generated=False):
+        from .repository_map import ScanLimits
         self.clear()
         if audience not in ("adult", "adult_reviewed"):
             raise ServiceError(403, "adult_review_required", "Ask an adult to review this repository before opening it together.")
         if isolation not in ("required", "portable"):
             raise ServiceError(422, "bad_isolation")
         self.service.limits = Limits(isolation=isolation)
-        result = self.service.repository_map(path, content_access=audience)
+        limits = self.scan_limits or ScanLimits.desktop(include_vendored=include_vendored, include_generated=include_generated)
+        result = self.service.repository_map(path, content_access=audience, scan_limits=limits, progress=progress,
+                                             should_cancel=should_cancel, use_cache=True)
         if audience == "adult_reviewed":
             result["saved_projects"] = []
         if baseline is not None:
@@ -198,6 +226,9 @@ class DesktopController:
             else:
                 result["comparison_unavailable"] = True
         self.data, self.nodes, self.selected, self.audience, self.route = result, {n["id"]: n for n in result["nodes"]}, "repo", audience, None
+        from .repository_index import RepositoryIndex
+        # The service built this index for the scan; the fallback keeps a replaced service usable.
+        self.index = self.service.repository_indexes.get(result["repo_id"]) or RepositoryIndex(self.nodes, result["edges"])
         return result
 
     def context(self):
@@ -245,6 +276,15 @@ class DesktopController:
     def remember(self):
         repo, _, sid = self.context()
         return self.service.repository_remember(repo, sid)
+
+    def source(self, ident=None):
+        """The whole scanned file for an item, only while its bytes still match the scan."""
+        repo, selected, sid = self.context()
+        return self.service.repository_source(repo, ident or selected, sid)
+
+    def search_source(self, query, should_cancel=None, progress=None):
+        repo, _, sid = self.context()
+        return self.service.repository_search_source(repo, query, sid, should_cancel=should_cancel, progress=progress)
 
     def shelf(self, audience):
         if audience != "adult":
@@ -298,11 +338,88 @@ def format_explanation(result):
 def format_repository_overview(data):
     nodes, edges = data["nodes"], data["edges"]
     count = lambda kind: sum(n["kind"] == kind for n in nodes)
+    coverage = data.get("coverage") or {}
+    found = coverage.get("supported_files_found")
+    reach = ""
+    if found is not None:
+        reach = (f"Coverage: {data['files_inspected']} of {'at least ' if coverage.get('supported_files_found_is_lower_bound') else ''}{found} "
+                 f"supported source files were parsed; {coverage.get('unsupported_files', 0)} files of other types were not read. "
+                 "See the Coverage tab for what was skipped and why.\n")
     return (f"Repository snapshot: {data['files_inspected']} files inspected, {count('function')} functions, "
             f"{count('dependency')} dependency items and {count('callsite')} mapped written calls.\n"
             f"{sum(e['evidence'] == 'static' for e in edges)} source links and "
-            f"{sum(e['evidence'] == 'inferred' for e in edges)} inferred links; {sum(bool(n.get('label')) for n in nodes)} labeled items.\n"
+            f"{sum(e['evidence'] == 'inferred' for e in edges)} inferred links; {sum(bool(n.get('label')) for n in nodes)} labeled items.\n" + reach +
             f"{len(data['warnings'])} scan warnings. These are bounded scan counts; no runtime calls were observed.\n\n")
+
+
+SKIP_REASONS = {
+    "hidden_directory": "Folders whose name starts with a dot (not opened)",
+    "hidden_file": "Files whose name starts with a dot (not read)",
+    "vendor_or_build_directory": "Dependency, build-output or virtual-environment folders (not opened)",
+    "linked_directory": "Folder links or junctions (never followed)",
+    "linked_file": "File links (never followed)",
+    "unreadable_directory": "Folders the scan could not list",
+    "unreadable": "Files that could not be read",
+    "oversized": "Files over the size limit (listed, not parsed)",
+    "generated": "Generated or minified files (listed, not parsed)",
+    "binary": "Files with a source extension but non-text content",
+    "could_not_parse": "Files the parser could not read as that language",
+    "partial_syntax": "Files parsed with syntax-error regions left out",
+    "encoding": "Files that needed a text-encoding fallback",
+    "item_limit_in_file": "Files with more items or calls than the per-file limit",
+    "node_limit": "Files left out when the total item limit was reached",
+}
+
+
+def format_coverage(data, cache=None):
+    """What the scan covered, skipped and assumed, so an absent item is not mistaken for absent code."""
+    coverage = data.get("coverage")
+    if not coverage:
+        return "No coverage summary was recorded for this scan."
+    lower = "at least " if coverage["supported_files_found_is_lower_bound"] else ""
+    lines = [f"Parsed {coverage['files_parsed']} of {lower}{coverage['supported_files_found']} supported source files in {coverage['seconds']['total']} seconds."]
+    if coverage["files_not_inspected_due_to_file_limit"]:
+        lines.append(f"{coverage['files_not_inspected_due_to_file_limit']} supported files were found after the {coverage['limits']['files']}-file limit and were NOT inspected. "
+                     "Open a subfolder as its own repository to cover them.")
+    if coverage["supported_files_found_is_lower_bound"]:
+        lines.append(f"The folder walk stopped at {coverage['limits']['directories']} folders, so more files may exist than were counted.")
+    if coverage["files_listed_without_parsing"]:
+        lines.append(f"{coverage['files_listed_without_parsing']} supported files are listed without functions or calls (see reasons below).")
+    lines.append(f"Reused {coverage['cache']['reused']} unchanged files from the local scan cache; parsed {coverage['cache']['parsed_now']} now.")
+    lines.append("\nBy language (found / parsed / with syntax-error regions / not parsed):")
+    for language, row in coverage["by_language"].items():
+        lines.append(f"  {language:<11} {row['found']:>7} / {row['parsed']:>7} / {row['partial']:>5} / {row['not_parsed']:>5}")
+    if not coverage["by_language"]:
+        lines.append("  No supported source files were found.")
+    if coverage["top_level"]:
+        lines.append("\nBy top-level folder (supported files found / inspected):")
+        for row in sorted(coverage["top_level"], key=lambda item: (item["inspected"] == item["found"], -item["found"], item["name"]))[:40]:
+            mark = "" if row["inspected"] == row["found"] else "   <- not fully inspected"
+            lines.append(f"  {row['name'][:48]:<48} {row['found']:>7} / {row['inspected']:>7}{mark}")
+        if len(coverage["top_level"]) > 40:
+            lines.append(f"  ... and {len(coverage['top_level']) - 40} more folders")
+    if coverage["skipped"]:
+        lines.append("\nPassed over or limited, with examples:")
+        for reason, entry in sorted(coverage["skipped"].items(), key=lambda item: -item[1]["count"]):
+            lines.append(f"  {entry['count']:>7}  {SKIP_REASONS.get(reason, reason)}")
+            for example in entry["examples"][:4]:
+                lines.append(f"             {example}")
+    if coverage["unsupported_files"]:
+        kinds = ", ".join(f"{suffix} {count}" for suffix, count in coverage["unsupported_extensions"].items())
+        lines.append(f"\nFiles of unsupported types (not read): {coverage['unsupported_files']}. Most common: {kinds}")
+    if coverage["nested_repositories"]:
+        lines.append("\nFolders inside this one that are their own Git repositories (scanned as part of this folder): " +
+                     ", ".join(coverage["nested_repositories"][:12]) + (" ..." if len(coverage["nested_repositories"]) > 12 else ""))
+    duplicates = coverage["duplicate_content"]
+    if duplicates["groups"]:
+        lines.append(f"\nByte-identical copies: {duplicates['files']} files in {duplicates['groups']} groups, for example " +
+                     "; ".join(" = ".join(group) for group in duplicates["examples"][:3]) +
+                     ". Copies make names ambiguous, so calls to them stay unresolved.")
+    if cache:
+        lines.append(f"\nLocal scan cache: {cache['records']} file records, {cache['bytes'] / 1e6:.1f} MB in this workspace. It holds excerpts of scanned source.")
+    lines.append("\nRelationships between repositories are not mapped: an import or include that leaves this folder is recorded as written, with no target. "
+                 "A missing item here means it was not scanned or not recognized, not that it does not exist.")
+    return "\n".join(lines)
 
 
 def format_comparison(result):
@@ -332,6 +449,9 @@ class DesktopApp:
 
         self.tk, self.ttk, self.root, self.controller = tk, ttk, root, controller
         self.jobs, self.busy, self.closing = queue.Queue(), False, False
+        self.progress_reports, self.cancel_event, self.search_after = queue.Queue(), None, None
+        self.tree_rows, self.tree_folder_rows, self.tree_pending = {}, {}, {}
+        self.source_shown, self.overview_text, self.labeled_nodes, self.graph_cache, self.match_ids = None, "", [], None, {}
         self.tree_ids, self.source_ids, self.call_indices, self.dest_ids, self.label_inventory_ids = {}, {}, [], [], {}
         self.connection_ids, self.history, self.change_ids, self.caller_ids = {}, [], {}, {}
         self.shelf_items, self.unmatched, self.projects = [], [], []
@@ -373,6 +493,9 @@ class DesktopApp:
         ttk.Label(settings, text="Level").pack(side="left")
         level = ttk.Combobox(settings, textvariable=self.level, state="readonly", width=15, values=("Getting started", "Explore together", "Technical"))
         level.pack(side="left", padx=4); level.bind("<<ComboboxSelected>>", self.level_changed)
+        self.include_vendored, self.include_generated = tk.BooleanVar(value=False), tk.BooleanVar(value=False)
+        ttk.Checkbutton(settings, text="Include dependency and build folders", variable=self.include_vendored).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(settings, text="Parse generated files", variable=self.include_generated).pack(side="left", padx=4)
         ttk.Label(outer, text="Adult review is self-attested, not age verification or filtering. Trusted development mode does not isolate hostile code.", wraplength=1100).pack(anchor="w")
 
         saved = ttk.LabelFrame(outer, text="Remembered folders · adult sessions only", padding=5); saved.pack(fill="x", pady=4)
@@ -382,7 +505,12 @@ class DesktopApp:
         self.forget_button = ttk.Button(saved, text="Forget folder", command=self.forget); self.forget_button.pack(side="left", padx=3)
         self.remember_button = ttk.Button(saved, text="Remember current folder", command=self.remember); self.remember_button.pack(side="left", padx=3)
         ttk.Label(outer, textvariable=self.status, wraplength=1100).pack(fill="x")
-        ttk.Button(outer, text="Show scan warnings", command=self.show_warnings).pack(anchor="w")
+        activity = ttk.Frame(outer); activity.pack(fill="x")
+        ttk.Button(activity, text="Show scan warnings", command=self.show_warnings).pack(side="left")
+        self.cancel_button = ttk.Button(activity, text="Stop", command=self.cancel_job, state="disabled"); self.cancel_button.pack(side="left", padx=4)
+        self.progress_bar = ttk.Progressbar(activity, mode="determinate", maximum=100, length=220); self.progress_bar.pack(side="left", padx=4)
+        self.progress_text = tk.StringVar(value="")
+        ttk.Label(activity, textvariable=self.progress_text).pack(side="left", fill="x", expand=True)
 
         split = ttk.Panedwindow(outer, orient="horizontal"); split.pack(fill="both", expand=True, pady=5)
         left = ttk.Frame(split, padding=3); right = ttk.Frame(split, padding=3)
@@ -414,17 +542,40 @@ class DesktopApp:
         find = ttk.Frame(left); find.pack(fill="x")
         ttk.Label(find, text="Find item").pack(side="left")
         ttk.Entry(find, textvariable=self.search).pack(side="left", fill="x", expand=True, padx=4)
-        self.search.trace_add("write", lambda *_: self.refresh_tree())
-        self.tree = ttk.Treeview(left, columns=("kind", "path"), show="tree headings", height=8, selectmode="browse")
+        self.search.trace_add("write", self.search_changed)
+        self.tree_note = tk.StringVar(value="")
+        ttk.Label(left, textvariable=self.tree_note, wraplength=620).pack(anchor="w")
+        browser = ttk.Frame(left); browser.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(browser, columns=("kind", "path"), show="tree headings", height=8, selectmode="browse")
         self.tree.heading("#0", text="Name or label"); self.tree.heading("kind", text="Type"); self.tree.heading("path", text="Source")
-        self.tree.column("#0", width=180); self.tree.column("kind", width=85); self.tree.column("path", width=180)
-        self.tree.pack(fill="both", expand=True); self.tree.bind("<<TreeviewSelect>>", self.tree_selected)
+        self.tree.column("#0", width=220); self.tree.column("kind", width=85); self.tree.column("path", width=150)
+        tree_scroll = ttk.Scrollbar(browser, orient="vertical", command=self.tree.yview); self.tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll.pack(side="right", fill="y"); self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self.tree_selected); self.tree.bind("<<TreeviewOpen>>", self.tree_opened)
 
         tabs = ttk.Notebook(right); tabs.pack(fill="both", expand=True); self.tabs = tabs
-        learn, source, connections, practice, organize, guided, calls_tab, changes = [ttk.Frame(tabs, padding=6) for _ in range(8)]
+        learn, source, connections, practice, organize, guided, calls_tab, changes, coverage, finder = [ttk.Frame(tabs, padding=6) for _ in range(10)]
         self.learn_tab, self.source_tab, self.connections_tab, self.calls_tab, self.changes_tab, self.guided_tab = learn, source, connections, calls_tab, changes, guided
-        for frame, title in ((learn, "Learn"), (source, "Source"), (connections, "Links"), (practice, "Practice"), (organize, "Labels"), (guided, "Guide"), (calls_tab, "Calls"), (changes, "Changes")):
+        self.coverage_tab, self.finder_tab = coverage, finder
+        for frame, title in ((learn, "Learn"), (source, "Source"), (connections, "Links"), (practice, "Practice"), (organize, "Labels"), (guided, "Guide"), (calls_tab, "Calls"), (changes, "Changes"), (coverage, "Coverage"), (finder, "Search")):
             tabs.add(frame, text=title)
+        ttk.Label(coverage, text="What this scan read, skipped and limited. An item missing from the map may simply not have been scanned.", wraplength=560).pack(anchor="w")
+        ttk.Button(coverage, text="Clear local scan cache", command=self.clear_cache).pack(anchor="w")
+        self.coverage_text = self.text_area(coverage, height=20)
+        ttk.Label(finder, text="Find text in the scanned files. Only files whose bytes still match the scan are searched; a match is text, not a relationship.", wraplength=560).pack(anchor="w")
+        finder_row = ttk.Frame(finder); finder_row.pack(fill="x")
+        self.source_query = tk.StringVar()
+        finder_entry = ttk.Entry(finder_row, textvariable=self.source_query); finder_entry.pack(side="left", fill="x", expand=True)
+        finder_entry.bind("<Return>", lambda _: self.search_source())
+        ttk.Button(finder_row, text="Search source", command=self.search_source).pack(side="left", padx=4)
+        self.match_summary = tk.StringVar(value="Type at least two characters.")
+        ttk.Label(finder, textvariable=self.match_summary, wraplength=560).pack(anchor="w")
+        self.match_list = ttk.Treeview(finder, columns=("line", "text"), show="tree headings", height=14, selectmode="browse")
+        self.match_list.heading("#0", text="File"); self.match_list.heading("line", text="Line"); self.match_list.heading("text", text="Text")
+        self.match_list.column("#0", width=200); self.match_list.column("line", width=55); self.match_list.column("text", width=300)
+        self.match_list.pack(fill="both", expand=True)
+        self.match_list.bind("<Double-1>", lambda _: self.open_match()); self.match_list.bind("<Return>", lambda _: self.open_match())
+        ttk.Button(finder, text="Open match in source", command=self.open_match).pack(anchor="w")
         learn_controls = ttk.Frame(learn); learn_controls.pack(fill="x")
         ttk.Label(learn_controls, text="Explain").pack(side="left")
         topics = ttk.Combobox(learn_controls, textvariable=self.topic, state="readonly", width=16,
@@ -464,7 +615,7 @@ class DesktopApp:
         self.review_note = ttk.Label(learn, text="Review marks are optional, local, and not scores.", wraplength=560); self.review_note.pack(anchor="w")
         ttk.Button(learn, text="Toggle my review mark", command=self.toggle_review).pack(anchor="w")
 
-        ttk.Label(source, text="Bounded snapshot of the containing file; code is unfiltered and may have changed since scanning.", wraplength=560).pack(anchor="w")
+        ttk.Label(source, text="The containing file. Its full text is shown only while its bytes still match the scan; otherwise the excerpt captured by the scan is shown. Code is unfiltered.", wraplength=560).pack(anchor="w")
         self.source_text = self.text_area(source, height=18)
         ttk.Label(source, text="Graph items in this file (including beyond the preview)").pack(anchor="w")
         self.source_list = ttk.Treeview(source, columns=("line", "type"), show="tree headings", height=7, selectmode="browse")
@@ -624,17 +775,45 @@ class DesktopApp:
         from tkinter import messagebox
         self.status.set(str(exc)); messagebox.showerror("Elucidary", str(exc), parent=self.root)
 
-    def run_job(self, work, done, message):
+    def run_job(self, work, done, message, cancellable=False):
         if self.busy:
             return
         self.busy = True; self.open_button.configure(state="disabled"); self.rescan_button.configure(state="disabled"); self.status.set(message)
         self.audience_box.configure(state="disabled"); self.isolation_box.configure(state="disabled"); self.browse_button.configure(state="disabled"); self.path_entry.configure(state="disabled")
+        self.cancel_button.configure(state="normal" if cancellable and self.cancel_event is not None else "disabled")
+        self.progress_bar.configure(mode="indeterminate"); self.progress_bar.start(60); self.progress_text.set("")
         def run():
             try: self.jobs.put((done, work(), None))
             except Exception as exc: self.jobs.put((done, None, exc))
         threading.Thread(target=run, daemon=True).start()
 
+    def report_progress(self, stage, done, total, detail):
+        """Called from the working thread; the window reads the newest report on its next poll."""
+        self.progress_reports.put((stage, done, total, detail))
+
+    def cancel_job(self):
+        if self.busy and self.cancel_event is not None:
+            self.cancel_event.set(); self.cancel_button.configure(state="disabled")
+            self.status.set("Stopping… the current files are finishing.")
+
+    def show_progress(self):
+        report = None
+        try:
+            while True: report = self.progress_reports.get_nowait()
+        except queue.Empty:
+            pass
+        if report is None or not self.busy: return
+        stage, done, total, detail = report
+        if total:
+            if str(self.progress_bar.cget("mode")) != "determinate":
+                self.progress_bar.stop(); self.progress_bar.configure(mode="determinate")
+            self.progress_bar.configure(value=100 * done / max(total, 1))
+            self.progress_text.set(f"{stage}: {done:,} of {total:,}" + (f" · {detail[-60:]}" if detail else ""))
+        else:
+            self.progress_text.set(f"{stage}: {done:,} source files found" + (f" · {detail[-60:]}" if detail else ""))
+
     def poll_jobs(self):
+        self.show_progress()
         try:
             done, result, error = self.jobs.get_nowait()
         except queue.Empty:
@@ -642,9 +821,16 @@ class DesktopApp:
         else:
             self.busy = False; self.open_button.configure(state="normal"); self.rescan_button.configure(state="normal")
             self.audience_box.configure(state="readonly"); self.isolation_box.configure(state="readonly"); self.browse_button.configure(state="normal"); self.path_entry.configure(state="normal")
+            self.cancel_button.configure(state="disabled"); self.cancel_event = None
+            self.progress_bar.stop(); self.progress_bar.configure(mode="determinate", value=0); self.progress_text.set("")
+            while not self.progress_reports.empty():
+                try: self.progress_reports.get_nowait()
+                except queue.Empty: break
             if self.closing:
                 self.controller.service.close(); self.root.destroy(); return
-            if error: self.notify_error(error)
+            if error and getattr(error, "code", None) == "scan_cancelled":
+                self.status.set("Stopped. Nothing from that scan was kept; open the folder again when ready.")
+            elif error: self.notify_error(error)
             else:
                 try: done(result)
                 except Exception as exc: self.notify_error(exc)
@@ -652,7 +838,9 @@ class DesktopApp:
 
     def close(self):
         if self.busy:
-            self.closing = True; self.root.withdraw(); return
+            self.closing = True
+            if self.cancel_event is not None: self.cancel_event.set()
+            self.root.withdraw(); return
         self.controller.service.close(); self.root.destroy()
 
     def browse(self):
@@ -669,7 +857,10 @@ class DesktopApp:
         self.change_list.delete(*self.change_list.get_children()); self.change_ids = {}
         self.change_summary.set("Use Rescan & compare to compare this session's snapshots.")
         self.canvas.delete("all"); self.calls.delete(0, "end"); self.call_detail.set("Select a written call to inspect what the scan knows."); self.steps.delete(0, "end")
-        for text in (self.learn_text, self.source_text, self.connection_text, self.practice_text, self.step_text, self.change_text, self.caller_text): self.write(text, "")
+        self.tree_ids, self.tree_rows, self.tree_folder_rows, self.tree_pending = {}, {}, {}, {}
+        self.tree_note.set(""); self.source_shown, self.overview_text, self.labeled_nodes, self.graph_cache = None, "", [], None
+        self.match_list.delete(*self.match_list.get_children()); self.match_ids = {}; self.match_summary.set("Type at least two characters.")
+        for text in (self.learn_text, self.source_text, self.connection_text, self.practice_text, self.step_text, self.change_text, self.caller_text, self.coverage_text): self.write(text, "")
         self.practice_prompt.set("Select a source item to find a question."); self.practice_source.configure(state="disabled"); self.practice_ran.configure(state="disabled")
         self.reset_reading_practice()
         self.map_status.set("Open a repository to explore the map."); self.zoom = 1.0; self.pan_x = self.pan_y = 0.0; self.drag_origin = None
@@ -703,15 +894,25 @@ class DesktopApp:
                 self.status.set("Open this folder with the same review choice before comparing scans."); return
             baseline = (self.controller.data, self.controller.audience)
         self.clear_view()
-        self.run_job(lambda: self.controller.open(path, audience, isolation, baseline), lambda result: self.loaded(result, path), "Reading source without executing repository code…")
+        cancel = self.cancel_event = threading.Event()
+        vendored, generated = self.include_vendored.get(), self.include_generated.get()
+        self.run_job(lambda: self.controller.open(path, audience, isolation, baseline, progress=self.report_progress, should_cancel=cancel.is_set,
+                                                  include_vendored=vendored, include_generated=generated),
+                     lambda result: self.loaded(result, path), "Reading source without executing repository code…", cancellable=True)
 
     def loaded(self, result, path):
         self.opened_path = path
-        self.status.set(f"Inspected {result['files_inspected']} files; {len(result['warnings'])} scan warnings. " +
+        coverage = result.get("coverage") or {}
+        found = coverage.get("supported_files_found")
+        reach = "" if found is None else f" of {'at least ' if coverage.get('supported_files_found_is_lower_bound') else ''}{found:,} supported files found"
+        self.status.set(f"Inspected {result['files_inspected']:,} files{reach}; {len(result['warnings'])} scan warnings. " +
                         ("Trusted development mode is not a hostile-code sandbox." if result["parser_isolation"] == "portable" else "Required parser isolation selected."))
         self.model_check.configure(state="normal" if result.get("local_assistant_available") else "disabled")
         self.projects = result.get("saved_projects", []) if self.controller.audience == "adult" else []
         self.project_box.configure(values=[f"{p['name']} · {p['labels']} labels" for p in self.projects]); self.project_box.set("")
+        self.overview_text = format_repository_overview(result)
+        self.labeled_nodes = [node for node in self.controller.nodes.values() if node.get("label")]
+        self.show_coverage()
         self.refresh_tree(); self.refresh_destinations(); self.select("repo")
         self.refresh_changes(result.get("comparison"))
         if result.get("comparison") is not None: self.tabs.select(self.changes_tab)
@@ -720,17 +921,136 @@ class DesktopApp:
         if result["warnings"]:
             self.write(self.learn_text, "Scan limits and omissions:\n" + "\n".join(result["warnings"]) + "\n\nSelect an item to learn more.")
 
+    def show_coverage(self):
+        if not self.controller.data: return
+        try: cache = self.controller.service.repository_cache_status()
+        except Exception: cache = None
+        self.write(self.coverage_text, format_coverage(self.controller.data, cache))
+
+    def clear_cache(self):
+        if self.busy: return
+        try:
+            self.controller.service.repository_cache_clear(); self.show_coverage()
+            self.status.set("Local scan cache cleared. Labels, review marks and remembered folders were kept; the next scan parses every file again.")
+        except Exception as exc: self.notify_error(exc)
+
+    # The browser shows folders while the search box is empty and matches while it is not.
+    TREE_CHILD_LIMIT, TREE_SEARCH_LIMIT = 2000, 500
+
+    def search_changed(self, *_):
+        if self.search_after is not None:
+            try: self.root.after_cancel(self.search_after)
+            except Exception: pass
+        self.search_after = self.root.after(220, self.apply_search)
+
+    def apply_search(self):
+        self.search_after = None
+        self.refresh_tree()
+
+    def tree_label(self, node, flat):
+        if node.get("label"): return node["label"]
+        name = str(node.get("name") or node["kind"])
+        return name.rsplit("/", 1)[-1] if node["kind"] == "file" and not flat else name
+
+    def tree_insert(self, parent, ident, flat=False):
+        node = self.controller.nodes[ident]
+        item = self.tree.insert(parent, "end", text=self.tree_label(node, flat), values=(node["kind"], node.get("path") or ""))
+        self.tree_ids[item] = ident; self.tree_rows[ident] = item
+        if not flat:
+            index = self.controller.index
+            if node["kind"] == "file" and index.in_file(node["path"]):
+                self.tree_pending[item] = ("file", node["path"]); self.tree.insert(item, "end", text="…")
+            elif node["kind"] == "function" and any(call.get("map_node_id") for call in node.get("call_sites", [])):
+                self.tree_pending[item] = ("function", ident); self.tree.insert(item, "end", text="…")
+        return item
+
+    def tree_fill(self, item):
+        """Add a row's children the first time it is opened."""
+        pending = self.tree_pending.pop(item, None)
+        if pending is None: return
+        self.tree.delete(*self.tree.get_children(item))
+        kind, value = pending; index = self.controller.index
+        if kind == "folder":
+            self.tree_fill_folder(item, value)
+        elif kind == "file":
+            members = index.file_items(value)
+            for node in members[:self.TREE_CHILD_LIMIT]: self.tree_insert(item, node["id"])
+            if len(members) > self.TREE_CHILD_LIMIT:
+                self.tree.insert(item, "end", text=f"… {len(members) - self.TREE_CHILD_LIMIT} more items; use Find item")
+        else:
+            for call in self.controller.nodes[value].get("call_sites", []):
+                if call.get("map_node_id") in self.controller.nodes and call["map_node_id"] not in self.tree_rows:
+                    self.tree_insert(item, call["map_node_id"])
+
+    def tree_fill_folder(self, parent, folder):
+        folders, files = self.controller.index.folders().get(folder, ((), ()))
+        shown = 0
+        for name in folders:
+            if shown >= self.TREE_CHILD_LIMIT: break
+            child = name if not folder else folder + "/" + name
+            item = self.tree.insert(parent, "end", text=name + "/", values=("folder", child))
+            self.tree_folder_rows[child] = item; self.tree_pending[item] = ("folder", child); self.tree.insert(item, "end", text="…")
+            shown += 1
+        for ident in files:
+            if shown >= self.TREE_CHILD_LIMIT: break
+            self.tree_insert(parent, ident); shown += 1
+        if len(folders) + len(files) > shown:
+            self.tree.insert(parent, "end", text=f"… {len(folders) + len(files) - shown} more entries; use Find item")
+
+    def tree_opened(self, *_):
+        if self.busy or not self.controller.data: return
+        item = self.tree.focus()
+        if item: self.tree_fill(item)
+
+    def reveal(self, ident):
+        """Show and highlight an item in the browser, opening its folders and file when needed."""
+        if not ident or not self.controller.data: return
+        if ident not in self.tree_rows and not self.search.get().strip():
+            node = self.controller.nodes.get(ident) or {}
+            path, folder = node.get("path"), ""
+            if not path: return
+            for part in path.split("/")[:-1]:
+                folder = part if not folder else folder + "/" + part
+                row = self.tree_folder_rows.get(folder)
+                if row is None: return
+                self.tree_fill(row); self.tree.item(row, open=True)
+            file_row = self.tree_rows.get("file:" + path)
+            if file_row is None: return
+            if ident != "file:" + path:
+                self.tree_fill(file_row); self.tree.item(file_row, open=True)
+                owner = self.tree_rows.get(node.get("owner_id"))
+                if ident not in self.tree_rows and owner is not None:
+                    self.tree_fill(owner); self.tree.item(owner, open=True)
+        row = self.tree_rows.get(ident)
+        if row is None:
+            self.tree.selection_remove(*self.tree.selection()); return
+        if self.tree.selection() != (row,): self.tree.selection_set(row)
+        self.tree.see(row)
+
+    def update_tree_row(self, ident):
+        row = self.tree_rows.get(ident)
+        if row is not None and ident in self.controller.nodes:
+            self.tree.item(row, text=self.tree_label(self.controller.nodes[ident], bool(self.search.get().strip())))
+        self.labeled_nodes = [node for node in self.controller.nodes.values() if node.get("label")]
+        self.graph_cache = None
+
     def refresh_tree(self):
         if self.busy: return
-        self.tree.delete(*self.tree.get_children()); self.tree_ids = {}
-        query = self.search.get().casefold()
-        for node in self.controller.nodes.values():
-            if not any(query in str(node.get(k) or "").casefold() for k in ("name", "label", "path", "kind")): continue
-            item = self.tree.insert("", "end", text=node.get("label") or node.get("name"), values=(node["kind"], node.get("path") or ""))
-            self.tree_ids[item] = node["id"]
-        for item, ident in self.tree_ids.items():
-            if ident == self.controller.selected:
-                self.tree.selection_set(item); break
+        self.tree.delete(*self.tree.get_children())
+        self.tree_ids, self.tree_rows, self.tree_folder_rows, self.tree_pending = {}, {}, {}, {}
+        index = self.controller.index
+        if not self.controller.data or index is None:
+            self.tree_note.set(""); return
+        query = self.search.get().strip()
+        if query:
+            found, total = index.search(query, self.TREE_SEARCH_LIMIT)
+            for ident in found: self.tree_insert("", ident, flat=True)
+            self.tree_note.set(f"{total:,} items match by name, label, path or type" +
+                               (f"; the first {len(found)} are shown. Type more to narrow the list." if total > len(found) else "."))
+        else:
+            self.tree_insert("", "repo"); self.tree_fill_folder("", "")
+            self.tree_note.set(f"{len(self.controller.nodes):,} items by folder. Open a file to see its functions; type above to find by name.")
+        self.reveal(self.controller.selected)
 
     def tree_selected(self, *_):
         if self.busy: return
@@ -744,7 +1064,7 @@ class DesktopApp:
             if remember and self.controller.selected and self.controller.selected != ident:
                 self.history.append(self.controller.selected)
                 self.history = self.history[-100:]
-            self.controller.select(ident); self.refresh_tree(); self.draw_graph(); self.show_selected()
+            self.controller.select(ident); self.reveal(ident); self.draw_graph(); self.show_selected()
         except ServiceError as exc: self.notify_error(exc)
 
     def go_back(self):
@@ -777,14 +1097,24 @@ class DesktopApp:
     def draw_graph(self):
         canvas = self.canvas; canvas.delete("all")
         if not self.controller.data: return
-        nodes, all_edges = list(self.controller.nodes.values()), self.controller.data["edges"]
-        edges = [e for e in all_edges if (e["evidence"] == "static" and self.show_static.get()) or (e["evidence"] == "inferred" and self.show_inferred.get())]
-        route = [s["node_id"] for s in (self.controller.route or {}).get("steps", [])]
+        index, nodes_by_id = self.controller.index, self.controller.nodes
+        shown = {name for name, variable in (("static", self.show_static), ("inferred", self.show_inferred)) if variable.get()}
+        steps = (self.controller.route or {}).get("steps", [])
+        route = [s["node_id"] for s in steps]
         scope = self.scope.get()
-        focus_path = self.controller.nodes[self.controller.selected].get("path") or None if scope == "This file" else None
+        focus_path = nodes_by_id[self.controller.selected].get("path") or None if scope == "This file" else None
         overview = scope == "Repository overview" or (scope == "This file" and not focus_path)
-        chosen, points = graph_view(nodes, edges, self.controller.selected, route, limit=int(self.density.get().split()[0]),
-                                    overview=overview, focus_path=focus_path, labeled=scope == "Saved labels")
+        limit = int(self.density.get().split()[0])
+        # Panning and zooming reuse the chosen items; only a new selection, scope or filter recomputes them.
+        key = (self.controller.data.get("scan_id"), self.controller.selected, tuple(route), limit, overview, focus_path, scope, tuple(sorted(shown)), len(self.labeled_nodes))
+        if self.graph_cache is None or self.graph_cache[0] != key:
+            chosen, points = graph_view(self.labeled_nodes, shown, self.controller.selected, route, limit=limit,
+                                        overview=overview, focus_path=focus_path, labeled=scope == "Saved labels", index=index)
+            inside = set(chosen)
+            edges = [e for ident in chosen for e in index.incident(ident)
+                     if e["source"] == ident and e["target"] in inside and e["evidence"] in shown]
+            self.graph_cache = (key, chosen, points, edges)
+        _, chosen, points, edges = self.graph_cache
         w, h = max(canvas.winfo_width(), 1), max(canvas.winfo_height(), 1)
         sx, sy = w / 900, h / 520
         center = points.get(self.controller.selected, (450, 260)) if self.zoom != 1 else (450, 260)
@@ -793,7 +1123,7 @@ class DesktopApp:
         for i in range(75):
             x, y = ((i * 197 + 29) % 900) * sx, ((i * 113 + 47) % 520) * sy
             canvas.create_oval(x, y, x+1, y+1, fill="#55617d", outline="")
-        groups = graph_constellations(nodes, chosen, projected, self.controller.selected)
+        groups = graph_constellations(nodes_by_id, chosen, projected, self.controller.selected)
         for path, bounds, count in groups:
             left, top, right, bottom = bounds
             if right < 0 or bottom < 0 or left > w or top > h: continue
@@ -804,9 +1134,9 @@ class DesktopApp:
                 title_id = canvas.create_text(max(4, left), max(12, top), anchor="sw", text=title,
                                               fill="#9cb4d7", font=("TkDefaultFont", 8), tags=("graph_group",))
                 file_id = "file:" + path
-                if file_id in self.controller.nodes:
+                if file_id in nodes_by_id:
                     canvas.tag_bind(title_id, "<Button-1>", lambda _, value=file_id: self.select(value))
-        route_edges = {(s["via"]["source"], s["via"]["target"], s["via"]["kind"], s["via"].get("path"), s["via"].get("line")) for s in (self.controller.route or {}).get("steps", []) if s.get("via")}
+        route_edges = {(s["via"]["source"], s["via"]["target"], s["via"]["kind"], s["via"].get("path"), s["via"].get("line")) for s in steps if s.get("via")}
         for edge in edges:
             if edge["source"] not in projected or edge["target"] not in projected: continue
             a, b = projected[edge["source"]], projected[edge["target"]]
@@ -818,7 +1148,7 @@ class DesktopApp:
             canvas.tag_bind(line, "<Button-1>", lambda _, value=edge: self.open_graph_connection(value))
         colors = {"repository": "#fff3b0", "file": "#8ed3ff", "function": "#d2b7ff", "dependency": "#f4c287", "callsite": "#ffb4db"}
         for ident in chosen:
-            n = self.controller.nodes[ident]; x, y = projected[ident]
+            n = nodes_by_id[ident]; x, y = projected[ident]
             radius = 8 if ident == self.controller.selected else 5
             if ident == self.controller.selected or ident in route:
                 canvas.create_oval(x-radius-4, y-radius-4, x+radius+4, y+radius+4, outline="#66abbd")
@@ -826,16 +1156,15 @@ class DesktopApp:
                 canvas.create_oval(x-radius-7, y-radius-7, x+radius+7, y+radius+7, outline="#ffb35c", width=2)
             dot = canvas.create_oval(x-radius, y-radius, x+radius, y+radius, fill=colors.get(n["kind"], "white"), outline="white" if ident == self.controller.selected else "#101629", width=2, tags=("graph_node",))
             canvas.tag_bind(dot, "<Button-1>", lambda _, value=ident: self.select(value))
-        for ident, text, x, y in graph_labels([self.controller.nodes[i] for i in chosen], projected, self.controller.selected, route, w, h):
+        for ident, text, x, y in graph_labels([nodes_by_id[i] for i in chosen], projected, self.controller.selected, route, w, h):
             label = canvas.create_text(x, y, anchor="w", text=text, fill="white", font=("TkDefaultFont", 9, "bold"), tags=("graph_label",))
             canvas.tag_bind(label, "<Button-1>", lambda _, value=ident: self.select(value))
-        hidden_route = any(e["evidence"] == "inferred" and not self.show_inferred.get() or e["evidence"] == "static" and not self.show_static.get()
-                           for e in all_edges if (e["source"], e["target"], e["kind"], e.get("path"), e.get("line")) in route_edges)
+        hidden_route = any(s["via"].get("evidence") not in shown for s in steps if s.get("via"))
         scope_note = ("Select a source item to focus its file; showing the overview. " if scope == "This file" and not focus_path else
-                      ("Showing saved labels and nearby connections. " if any(n.get("label") for n in nodes) else
+                      ("Showing saved labels and nearby connections. " if self.labeled_nodes else
                        "No labels are saved yet; showing the selection and nearby connections. ") if scope == "Saved labels" else
                       "Showing this file and any active path. " if focus_path else "")
-        self.map_status.set(scope_note + f"Showing {len(chosen)} of {len(nodes)} scanned items; all are available in the list. File groupings are visual, not new relationships." + (" Some path links are hidden by the filters." if hidden_route else ""))
+        self.map_status.set(scope_note + f"Showing {len(chosen)} of {len(nodes_by_id):,} scanned items; all are available in the list. File groupings are visual, not new relationships." + (" Some path links are hidden by the filters." if hidden_route else ""))
 
     def show_selected(self):
         if self.busy or not self.controller.data or self.controller.selected not in self.controller.nodes: return
@@ -853,7 +1182,7 @@ class DesktopApp:
         self.show_source(node)
         self.prepare_connections(node); self.prepare_practice(node); self.prepare_callers(node)
         try:
-            overview = format_repository_overview(self.controller.data) if node["kind"] == "repository" else ""
+            overview = self.overview_text if node["kind"] == "repository" else ""
             self.write(self.learn_text, overview + format_explanation(self.controller.explain(self.topic.get().lower(), self.level_key())))
         except ServiceError as exc: self.write(self.learn_text, str(exc))
 
@@ -912,32 +1241,91 @@ class DesktopApp:
         file = self.controller.nodes.get("file:" + str(node.get("path") or ""))
         self.source_list.delete(*self.source_list.get_children()); self.source_ids = {}
         if not file:
-            self.write(self.source_text, "Select a file or source item to inspect its bounded source preview."); return
-        source_lines = file.get("source_preview", [])
+            self.source_shown = None
+            self.write(self.source_text, "Select a file or source item to inspect its source."); return
         selected_line = focus_line if type(focus_line) is int and focus_line > 0 else node.get("line")
-        outside_preview = bool(selected_line and not any(item["line"] == selected_line for item in source_lines))
-        if outside_preview:
-            source_lines = [item for item in file.get("source_context", []) if abs(item["line"] - selected_line) <= 2]
-        lines = [f"{line['line']:>4}: {line['text']}" + (" [line shortened]" if line.get("truncated") else "") for line in source_lines]
-        prefix = f"{file['path']} · SHA-256 {file['sha256']}\n"
-        if outside_preview:
-            has_selected_line = any(item["line"] == selected_line for item in source_lines)
-            prefix += ("[Showing captured context around the selected item.]\n" if has_selected_line else
-                       "[The selected line was not captured; any lines below are nearby context.]\n")
-            if file.get("source_context_truncated"):
-                prefix += "[Some context lines were omitted or shortened by scan limits.]\n"
-        elif file.get("source_preview_truncated"): prefix += "[Preview omits or shortens source lines.]\n"
-        self.write(self.source_text, prefix + "\n".join(lines))
-        position = next((i for i, line in enumerate(source_lines) if line["line"] == selected_line), None)
-        if position is not None:
-            row = prefix.count("\n") + 1 + position
-            self.source_text.tag_configure("selected_source", background="#fff3a3", foreground="#1c1f23")
-            self.source_text.tag_add("selected_source", f"{row}.0", f"{row}.end")
-            self.source_text.see(f"{row}.0")
-        relevant = [n for n in self.controller.nodes.values() if n.get("path") == file["path"] and n.get("line") and n["id"] != file["id"]]
-        for item in sorted(relevant, key=lambda n: (n["line"], n["id"])):
+        try: current = self.controller.source(file["id"]) if file.get("sha256") else None
+        except ServiceError: current = None
+        self.source_text.tag_configure("selected_source", background="#fff3a3", foreground="#1c1f23")
+        if current and current["status"] == "current":
+            notes = ["Whole file, read again from disk just now; its bytes match this scan."]
+            if current.get("truncated"): notes.append(f"Only the first {len(current['lines']):,} of {current['line_count']:,} lines are shown.")
+            if current.get("long_lines"): notes.append("Very long lines are shortened.")
+            if file.get("parse_note"): notes.append(file["parse_note"])
+            header = [f"{file['path']} · SHA-256 {file['sha256']}", "[" + " ".join(notes) + "]"]
+            shown = (file["id"], file["sha256"], len(current["lines"]))
+            if self.source_shown != shown:
+                self.write(self.source_text, "\n".join(header) + "\n" + "\n".join(f"{number:>5}: {line}" for number, line in enumerate(current["lines"], 1)))
+                self.source_shown = shown
+            self.source_text.tag_remove("selected_source", "1.0", "end")
+            if type(selected_line) is int and 0 < selected_line <= len(current["lines"]):
+                row = len(header) + selected_line
+                self.source_text.tag_add("selected_source", f"{row}.0", f"{row}.end")
+                self.source_text.see(f"{row}.0")
+        else:
+            self.source_shown = None
+            source_lines = file.get("source_preview", [])
+            outside_preview = bool(selected_line and not any(item["line"] == selected_line for item in source_lines))
+            if outside_preview:
+                source_lines = [item for item in file.get("source_context", []) if abs(item["line"] - selected_line) <= 2]
+            lines = [f"{line['line']:>4}: {line['text']}" + (" [line shortened]" if line.get("truncated") else "") for line in source_lines]
+            prefix = f"{file['path']} · SHA-256 {file.get('sha256') or 'unavailable'}\n"
+            if current and current["status"] == "changed":
+                prefix += "[This file changed on disk after the scan. Showing what the scan captured; rescan to read the new version.]\n"
+            elif file.get("parse_status"):
+                prefix += "[" + str(file.get("parse_note") or "Listed but not parsed.") + " Its text could not be shown.]\n"
+            else:
+                prefix += "[The file could not be read again; showing what the scan captured.]\n"
+            if outside_preview:
+                has_selected_line = any(item["line"] == selected_line for item in source_lines)
+                prefix += ("[Showing captured context around the selected item.]\n" if has_selected_line else
+                           "[The selected line was not captured; any lines below are nearby context.]\n")
+                if file.get("source_context_truncated"):
+                    prefix += "[Some context lines were omitted or shortened by scan limits.]\n"
+            elif file.get("source_preview_truncated"): prefix += "[Preview omits or shortens source lines.]\n"
+            self.write(self.source_text, prefix + "\n".join(lines))
+            position = next((i for i, line in enumerate(source_lines) if line["line"] == selected_line), None)
+            if position is not None:
+                row = prefix.count("\n") + 1 + position
+                self.source_text.tag_add("selected_source", f"{row}.0", f"{row}.end")
+                self.source_text.see(f"{row}.0")
+        relevant = [self.controller.nodes[ident] for ident in self.controller.index.in_file(file["path"]) if self.controller.nodes[ident].get("line")]
+        for item in sorted(relevant, key=lambda n: (n["line"], n["id"]))[:self.TREE_CHILD_LIMIT]:
             iid = self.source_list.insert("", "end", text=item.get("label") or item.get("name"), values=(item["line"], item["kind"]))
             self.source_ids[iid] = item["id"]
+
+    def search_source(self):
+        if self.busy or not self.controller.data:
+            self.status.set("Open a repository before searching its source."); return
+        query = self.source_query.get().strip()
+        if len(query) < 2:
+            self.match_summary.set("Type at least two characters."); return
+        cancel = self.cancel_event = threading.Event()
+        self.run_job(lambda: self.controller.search_source(query, cancel.is_set, self.report_progress), self.show_matches,
+                     "Searching the scanned files…", cancellable=True)
+
+    def show_matches(self, result):
+        self.match_list.delete(*self.match_list.get_children()); self.match_ids = {}
+        for match in result["matches"]:
+            item = self.match_list.insert("", "end", text=match["path"], values=(match["line"], match["text"] + (" …" if match["truncated"] else "")))
+            self.match_ids[item] = match
+        stopped = {"result limit": " The list reached its limit; refine the text.", "time limit": " The search ran out of time; results are partial.",
+                   "cancelled": " The search was stopped; results are partial."}.get(result["stopped"], "")
+        skipped = result["files_changed_since_scan"] + result["files_unavailable"]
+        self.match_summary.set(f"{len(result['matches'])} matching lines for “{result['query']}” in {result['files_searched']:,} of {result['files_total']:,} scanned files." + stopped +
+                               (f" {skipped} files changed or could not be read and were not searched; rescan to include them." if skipped else ""))
+        self.status.set("Search finished. " + result["limitation"])
+
+    def open_match(self):
+        if self.busy or not self.controller.data: return
+        selected = self.match_list.selection()
+        match = self.match_ids.get(selected[0]) if selected else None
+        if not match or match["node_id"] not in self.controller.nodes:
+            self.status.set("Choose a match first."); return
+        self.select(match["node_id"])
+        self.show_source(self.controller.nodes[match["node_id"]], focus_line=match["line"])
+        self.tabs.select(self.source_tab)
+        self.status.set("Showing the matching line; the surrounding item is selected in the map.")
 
     def open_source_item(self):
         if self.busy: return
@@ -953,7 +1341,7 @@ class DesktopApp:
 
     def prepare_connections(self, node, focus=None):
         self.connection_list.delete(*self.connection_list.get_children()); self.connection_ids = {}; self.write(self.connection_text, "Select a connection to inspect its evidence.")
-        nearby = [e for e in self.controller.data["edges"] if e["source"] == node["id"] or e["target"] == node["id"]]
+        nearby = list(self.controller.index.incident(node["id"]))
         if focus is not None and any(edge is focus for edge in nearby):
             nearby = [focus] + [edge for edge in nearby if edge is not focus]
         for edge in nearby[:200]:
@@ -989,7 +1377,7 @@ class DesktopApp:
         if chosen and chosen[0] in self.connection_ids: self.select(self.connection_ids[chosen[0]][1])
 
     def open_graph_connection(self, edge):
-        if self.busy or not self.controller.data or not any(item is edge for item in self.controller.data["edges"]): return
+        if self.busy or not self.controller.data or not any(item is edge for item in self.controller.index.incident(edge.get("source"))): return
         if edge.get("source") not in self.controller.nodes or edge.get("target") not in self.controller.nodes: return
         self.select(edge["source"])
         self.prepare_connections(self.controller.nodes[edge["source"]], focus=edge)
@@ -1011,7 +1399,7 @@ class DesktopApp:
         file_id = "file:" + str(path or "")
         if file_id not in self.controller.nodes or type(line) is not int or line < 1:
             self.status.set("This step has no individual source location."); return
-        candidates = [n for n in self.controller.nodes.values() if n.get("path") == path and n.get("line") == line]
+        candidates = [self.controller.nodes[ident] for ident in self.controller.index.at(path, line)]
         priority = {"callsite": 0, "dependency": 1, "function": 2}
         chosen_id = min(candidates, key=lambda n: (priority.get(n["kind"], 3), n["id"]))["id"] if candidates else file_id
         self.select(chosen_id)
@@ -1021,7 +1409,7 @@ class DesktopApp:
 
     def prepare_practice(self, node):
         self.prepare_reading_practice()
-        edges = self.controller.data["edges"]
+        edges = self.controller.index.incident(node["id"])
         match = next(((e, "call") for e in edges if e["source"] == node["id"] and e["kind"] == "possible call" and e["evidence"] == "inferred"), None)
         if not match: match = next(((e, "callsite") for e in edges if e["target"] == node["id"] and e["kind"] == "contains written call" and e["evidence"] == "static"), None)
         if not match: match = next(((e, "definition") for e in edges if e["target"] == node["id"] and e["kind"] == "defines" and e["evidence"] == "static"), None)
@@ -1255,7 +1643,7 @@ class DesktopApp:
     def save_label(self):
         if self.busy or not self.controller.data: return
         try:
-            result = self.controller.label(self.label.get()); self.refresh_tree(); self.refresh_destinations(); self.draw_graph(); self.show_selected()
+            result = self.controller.label(self.label.get()); self.update_tree_row(self.controller.selected); self.refresh_destinations(); self.draw_graph(); self.show_selected()
             self.steps.delete(0, "end"); self.write(self.step_text, ""); self.status.set("Label saved locally." if result["label"] else "Label removed from this item.")
         except ServiceError as exc: self.notify_error(exc)
 
@@ -1294,7 +1682,7 @@ class DesktopApp:
             result = self.controller.service.repository_rebind_label(repo, old["node_id"], ident, sid)
             self.controller.nodes[ident]["label"] = result["label"]
             self.controller.data["unmatched_labels"] = [x for x in self.controller.data["unmatched_labels"] if x["node_id"] != old["node_id"]]
-            self.controller.route = None; self.refresh_tree(); self.refresh_destinations(); self.draw_graph(); self.show_selected()
+            self.controller.route = None; self.update_tree_row(ident); self.refresh_destinations(); self.draw_graph(); self.show_selected()
             self.steps.delete(0, "end"); self.write(self.step_text, ""); self.status.set("Saved label attached to this item.")
         except ServiceError as exc: self.notify_error(exc)
 
@@ -1339,7 +1727,8 @@ class DesktopApp:
         except ServiceError as exc: self.notify_error(exc)
 
     def refresh_destinations(self):
-        self.dest_ids = [n["id"] for n in self.controller.nodes.values() if n.get("label")]
+        self.labeled_nodes = [n for n in self.controller.nodes.values() if n.get("label")]
+        self.dest_ids = [n["id"] for n in self.labeled_nodes]
         self.destination.configure(values=[f"{self.controller.nodes[i]['label']} · {self.controller.nodes[i].get('path') or 'repository'}" + (" · needs review" if self.controller.nodes[i].get("label_needs_review") else "") for i in self.dest_ids]); self.destination.set("")
         self.label_inventory.delete(*self.label_inventory.get_children()); self.label_inventory_ids = {}
         for node in sorted((n for n in self.controller.nodes.values() if n.get("label")), key=lambda n: (n["label"].casefold(), n.get("path") or "", n["id"])):

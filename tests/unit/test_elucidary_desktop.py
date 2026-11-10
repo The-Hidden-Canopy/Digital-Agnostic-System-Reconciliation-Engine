@@ -104,8 +104,10 @@ class DesktopControllerTests(unittest.TestCase):
     def test_source_context_obeys_shared_scan_and_per_file_limits(self):
         source = self.root_path / "long.py"
         source.write_text("# padding\n" * 150 + "def late(value):\n    return value\n", encoding="utf-8")
-        with patch("verifier_lab.repository_map.MAX_CONTEXT_CHARS", 20), patch("verifier_lab.repository_map.MAX_CONTEXT_LINES_PER_FILE", 3):
-            scan = self.ctrl.open(str(self.root_path), "adult", "portable")
+        from dataclasses import replace
+        from verifier_lab.repository_map import ScanLimits
+        self.ctrl.scan_limits = replace(ScanLimits.desktop(), max_context_chars=20, max_context_lines_per_file=3)
+        scan = self.ctrl.open(str(self.root_path), "adult", "portable")
         files = [node for node in scan["nodes"] if node["kind"] == "file"]
         self.assertLessEqual(sum(len(item["text"]) + 1 for node in files for item in node["source_context"]), 20)
         long_file = next(node for node in files if node["path"] == "long.py")
@@ -306,7 +308,9 @@ class NativeWidgetSmokeTests(unittest.TestCase):
                     self.assertEqual(app.reading_questions[app.reading_index]["kind"], "return")
                     self.assertIn("return helper(value)", app.source_text.get("1.0", "end"))
                     self.assertTrue(app.source_text.tag_ranges("selected_source"))
-                    self.assertIn("captured context around the selected item", app.source_text.get("1.0", "end"))
+                    # The whole file is shown while its bytes still match the scan, not just a captured excerpt.
+                    self.assertIn("its bytes match this scan", app.source_text.get("1.0", "end"))
+                    self.assertIn("    1: # padding", app.source_text.get("1.0", "end"))
                     self.assertIn("151: def late(value):", app.source_text.get("1.0", "end"))
                     self.assertTrue(app.source_text.tag_ranges("selected_source"))
                     late_call = next(node for node in app.controller.nodes.values() if node["kind"] == "callsite" and node.get("path") == "long.py")
@@ -316,7 +320,11 @@ class NativeWidgetSmokeTests(unittest.TestCase):
                     self.assertIn("152:     return helper(value)", app.source_text.get("1.0", "end"))
                     long_source.write_text("# padding\n" * 150 + "def late(value):\n    return value + 1\n", encoding="utf-8")
                     app.show_selected()
+                    # Changed bytes are never shown as scan evidence: the captured excerpt is used and the change is stated.
+                    self.assertIn("changed on disk after the scan", app.source_text.get("1.0", "end"))
+                    self.assertIn("captured context around the selected item", app.source_text.get("1.0", "end"))
                     self.assertIn("def late(value):", app.source_text.get("1.0", "end"))
+                    self.assertNotIn("return value + 1", app.source_text.get("1.0", "end"))
                     app.select("function:m.py:start"); app.set_route_start()
                     app.select("function:m.py:helper"); app.build_item_path()
                     self.assertEqual(app.controller.route["status"], "unavailable")

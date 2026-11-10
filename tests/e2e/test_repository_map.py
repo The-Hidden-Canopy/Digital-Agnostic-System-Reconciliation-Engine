@@ -648,9 +648,9 @@ class RepositoryMapTests(unittest.TestCase):
             self.assertFalse(any(e["kind"] == "possible call" for e in result["edges"]))
             self.assertTrue(any(e["kind"] == "possible local module" for e in result["edges"]))
 
-    def test_javascript_cross_file_and_unsupported_syntax(self):
+    def test_javascript_cross_file_and_current_syntax(self):
         try:
-            import esprima
+            import tree_sitter, tree_sitter_typescript
         except ImportError:
             self.skipTest("optional JavaScript parser is not installed")
         with tempfile.TemporaryDirectory() as tmp:
@@ -664,7 +664,9 @@ class RepositoryMapTests(unittest.TestCase):
             self.assertEqual(edge["target"], "function:tools.js:greet")
             self.assertEqual(edge["evidence"], "inferred")
             self.assertTrue(any(e["kind"] == "possible local module" and e["target"] == "file:tools.js" for e in result["edges"]))
-            self.assertTrue(any("unsupported.js" in w for w in result["warnings"]))
+            # Optional chaining used to stop the older parser; the file is now read rather than dropped.
+            self.assertTrue(any(n["id"] == "file:unsupported.js" for n in result["nodes"]))
+            self.assertFalse(any("unsupported.js" in w for w in result["warnings"]))
             self.assertFalse(any("privateFn()" in e.get("snippet", "") for e in result["edges"]))
 
     def test_explanations_use_source_shape_and_skip_nested_returns(self):

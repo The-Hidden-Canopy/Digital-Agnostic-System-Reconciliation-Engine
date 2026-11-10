@@ -1,28 +1,76 @@
-"""Bounded tree-sitter projections for TypeScript, TSX/JSX and C++ source."""
+"""Bounded tree-sitter projections for TypeScript, TSX/JSX, JavaScript, C, C++, C# and Rust source.
+
+Every record is written syntax. Nothing here resolves a call target; the scanner infers
+candidates afterwards and labels them as inferred.
+"""
 from __future__ import annotations
 
 import hashlib
 
+# language -> (grammar module, factory attribute, syntax family)
+GRAMMARS = {
+    "typescript": ("tree_sitter_typescript", "language_typescript", "ts"),
+    "tsx": ("tree_sitter_typescript", "language_tsx", "ts"),
+    "jsx": ("tree_sitter_typescript", "language_tsx", "ts"),
+    "javascript": ("tree_sitter_typescript", "language_tsx", "ts"),
+    "cpp": ("tree_sitter_cpp", "language", "c"),
+    "c": ("tree_sitter_c", "language", "c"),
+    "csharp": ("tree_sitter_c_sharp", "language", "csharp"),
+    "rust": ("tree_sitter_rust", "language", "rust"),
+}
+MAX_FILE_NODES, MAX_FILE_CALLS = 4000, 20000
+_PARSERS = {}
+
+_CLASS_TYPES = {
+    "ts": ("class_declaration", "abstract_class_declaration", "class"),
+    "c": ("class_specifier", "struct_specifier"),
+    "csharp": ("class_declaration", "struct_declaration", "interface_declaration", "record_declaration",
+               "record_struct_declaration"),
+    "rust": ("impl_item", "trait_item"),
+}
+_NESTED_BODIES = {"function_definition", "function_declaration", "function_expression", "arrow_function",
+                  "lambda_expression", "class_declaration", "method_definition", "function_item",
+                  "closure_expression", "local_function_statement", "anonymous_method_expression",
+                  "method_declaration", "generator_function_declaration", "generator_function"}
+_FEATURES = {"if_statement": "conditional", "for_statement": "loop", "for_in_statement": "loop",
+             "for_range_loop": "loop", "while_statement": "loop", "do_statement": "loop",
+             "switch_statement": "selection", "try_statement": "exception handling", "throw_statement": "raise",
+             "await_expression": "await", "co_await_expression": "await",
+             # C#
+             "foreach_statement": "loop", "switch_expression": "selection", "throw_expression": "raise",
+             # Rust
+             "if_expression": "conditional", "for_expression": "loop", "while_expression": "loop",
+             "loop_expression": "loop", "match_expression": "pattern match"}
+_RETURNS = ("return_statement", "return_expression")
+_RETURN_DETAIL = {"ts": "explicit_only_arrow_expressions_excluded", "c": "explicit",
+                  "csharp": "explicit_only_expression_bodies_excluded", "rust": "explicit_only_tail_expressions_excluded"}
+
+
+def _parser(language):
+    if language not in _PARSERS:
+        import importlib
+        from tree_sitter import Language, Parser
+        module, factory, _ = GRAMMARS[language]
+        _PARSERS[language] = Parser(Language(getattr(importlib.import_module(module), factory)()))
+    return _PARSERS[language]
+
 
 def parse_source(data, path, language):
+    if language not in GRAMMARS:
+        return {"error": "unsupported language"}
     try:
-        from tree_sitter import Language, Parser
-        if language == "cpp":
-            import tree_sitter_cpp as grammar
-            capsule = grammar.language()
-        else:
-            import tree_sitter_typescript as grammar
-            capsule = grammar.language_tsx() if language in ("tsx", "jsx") else grammar.language_typescript()
+        parser = _parser(language)
     except ImportError:
         return {"error": "language parser unavailable; install the languages extra"}
     try:
         data.decode("utf-8-sig")
-        root = Parser(Language(capsule)).parse(data).root_node
+        root = parser.parse(data).root_node
         visitor = _TreeVisitor(data, path, language)
         visitor.visit(root)
         visitor.finish()
         return {"nodes": visitor.nodes, "edges": visitor.edges, "imports": visitor.imports,
                 "calls": visitor.calls, "top_level": visitor.top_level, "exports": visitor.exports,
+                "members": visitor.members, "qualified": visitor.qualified,
                 "truncated": visitor.truncated, "partial": root.has_error}
     except (UnicodeError, ValueError, RecursionError, MemoryError):
         return {"error": "invalid or overly complex source"}
@@ -31,12 +79,14 @@ def parse_source(data, path, language):
 class _TreeVisitor:
     def __init__(self, data, path, language):
         self.data, self.path, self.language = data, path, language
+        self.family = GRAMMARS[language][2]
         self.digest = hashlib.sha256(data).hexdigest()
         self.lines = data.decode("utf-8-sig").splitlines()
         self.file_id = "file:" + path
         self.nodes, self.edges, self.imports, self.calls = [], [], [], []
         self.top_level, self.exports, self.pending_exports, self.names = {}, {}, [], {}
-        self.stack, self.scopes = [], []
+        self.members, self.qualified = {}, {}
+        self.stack, self.scopes, self.classes = [], [], []
         self.class_depth = 0
         self.truncated = False
 
@@ -50,117 +100,226 @@ class _TreeVisitor:
         n = self.line(node)
         return self.lines[n - 1][:1000] if n <= len(self.lines) else ""
 
+    # ------------------------------------------------------------------ traversal
     def visit(self, node):
         typ = node.type
         if typ == "ERROR" or node.is_missing:
             return
         if node.has_error and typ in ("function_definition", "function_declaration", "generator_function_declaration",
-                                      "variable_declarator", "import_statement", "export_statement", "preproc_include"):
+                                      "variable_declarator", "import_statement", "export_statement", "preproc_include",
+                                      "method_definition", "method_declaration", "constructor_declaration",
+                                      "local_function_statement", "function_item", "use_declaration", "using_directive"):
             return
-        if self.language == "cpp":
-            if typ == "preproc_include":
-                self.include(node)
-                return
-            if typ in ("namespace_definition", "class_specifier", "struct_specifier"):
-                name = self.text(node.child_by_field_name("name"))
-                is_class = typ in ("class_specifier", "struct_specifier")
-                if name:
-                    self.scopes.append(name)
-                if is_class:
-                    self.class_depth += 1
-                for child in node.named_children:
-                    if child.type not in ("namespace_identifier", "type_identifier"):
-                        self.visit(child)
-                if is_class:
-                    self.class_depth -= 1
-                if name:
-                    self.scopes.pop()
-                return
-            if typ == "function_definition":
-                dec = node.child_by_field_name("declarator")
-                while dec and dec.type != "function_declarator":
-                    dec = dec.child_by_field_name("declarator")
-                name = self.text(dec.child_by_field_name("declarator")) if dec else ""
-                if name:
-                    self.function(name, node, node.child_by_field_name("body"))
-                    return
-        else:
-            if typ == "import_statement":
-                self.import_ts(node)
-                return
-            if typ == "export_statement":
-                if node.child_by_field_name("source"):
-                    return
-                before = set(self.top_level)
-                for child in node.named_children:
-                    if child.type == "export_clause":
-                        for spec in child.named_children:
-                            if spec.type == "export_specifier":
-                                name = self.text(spec.child_by_field_name("name"))
-                                alias = self.text(spec.child_by_field_name("alias")) or name
-                                self.pending_exports.append((alias, name))
-                    else:
-                        self.visit(child)
-                default = self.text(node).lstrip().startswith("export default")
-                for name in set(self.top_level) - before:
-                    self.pending_exports.append(("default" if default else name, name))
-                return
-            if typ in ("function_declaration", "generator_function_declaration"):
-                name = self.text(node.child_by_field_name("name"))
-                if name and node.child_by_field_name("body"):
-                    self.function(name, node, node.child_by_field_name("body"))
-                    return
-            if typ == "variable_declarator":
-                name, value = node.child_by_field_name("name"), node.child_by_field_name("value")
-                if name and name.type == "identifier" and value and value.type in ("arrow_function", "function_expression"):
-                    self.function(self.text(name), node, value.child_by_field_name("body"))
-                    return
-        if typ == "call_expression":
+        handler = getattr(self, "visit_" + self.family)
+        if handler(node, typ):
+            return
+        if typ in ("call_expression", "invocation_expression"):
             self.call(node)
         for child in node.named_children:
             self.visit(child)
 
-    def shape(self, node, body):
-        from .repository_learning import evidence_lines
+    def scoped(self, node, name, is_class, skip=()):
+        """Visit a namespace or type body with its name on the scope stack."""
+        if name:
+            self.scopes.append(name)
+        if is_class:
+            self.class_depth += 1
+            self.classes.append(".".join(self.scopes))
+        for child in node.named_children:
+            if child.type not in skip:
+                self.visit(child)
+        if is_class:
+            self.classes.pop()
+            self.class_depth -= 1
+        if name:
+            self.scopes.pop()
+
+    def visit_c(self, node, typ):
+        if typ == "preproc_include":
+            self.include(node)
+            return True
+        if typ in ("namespace_definition", "class_specifier", "struct_specifier"):
+            name = self.text(node.child_by_field_name("name"))
+            self.scoped(node, name, typ != "namespace_definition", skip=("namespace_identifier", "type_identifier"))
+            return True
+        if typ == "function_definition":
+            dec = node.child_by_field_name("declarator")
+            while dec and dec.type != "function_declarator":
+                dec = dec.child_by_field_name("declarator")
+            name = self.text(dec.child_by_field_name("declarator")) if dec else ""
+            if name:
+                self.function(name, node, node.child_by_field_name("body"))
+                return True
+        return False
+
+    def visit_ts(self, node, typ):
+        if typ == "import_statement":
+            self.import_ts(node)
+            return True
+        if typ == "export_statement":
+            if node.child_by_field_name("source"):
+                return True
+            before = set(self.top_level)
+            for child in node.named_children:
+                if child.type == "export_clause":
+                    for spec in child.named_children:
+                        if spec.type == "export_specifier":
+                            name = self.text(spec.child_by_field_name("name"))
+                            alias = self.text(spec.child_by_field_name("alias")) or name
+                            self.pending_exports.append((alias, name))
+                else:
+                    self.visit(child)
+            default = self.text(node).lstrip().startswith("export default")
+            for name in set(self.top_level) - before:
+                self.pending_exports.append(("default" if default else name, name))
+            return True
+        if typ in ("function_declaration", "generator_function_declaration"):
+            name = self.text(node.child_by_field_name("name"))
+            if name and node.child_by_field_name("body"):
+                self.function(name, node, node.child_by_field_name("body"))
+                return True
+        if typ == "variable_declarator":
+            name, value = node.child_by_field_name("name"), node.child_by_field_name("value")
+            if name and name.type == "identifier" and value and value.type in ("arrow_function", "function_expression"):
+                self.function(self.text(name), node, value.child_by_field_name("body"))
+                return True
+            if value and value.type == "call_expression" and self.text(value.child_by_field_name("function")) == "require":
+                self.require_ts(node, name, value)
+        if typ in ("class_declaration", "abstract_class_declaration"):
+            name = self.text(node.child_by_field_name("name"))
+            if name:
+                self.scoped(node, name, True, skip=("type_identifier", "identifier"))
+                return True
+        if typ == "method_definition":
+            name_node, body = node.child_by_field_name("name"), node.child_by_field_name("body")
+            if name_node and name_node.type == "property_identifier" and body and self.class_depth:
+                self.function(self.text(name_node), node, body)
+                return True
+        if typ == "assignment_expression":
+            self.commonjs_export(node)
+        return False
+
+    def visit_csharp(self, node, typ):
+        if typ == "using_directive":
+            name = " ".join(self.text(node).rstrip(";").split()[1:])
+            if name:
+                key = self.add_dependency(node, name)
+                if key:
+                    self.imports.append({"id": key, "source": name, "bound": None, "symbol": None, "namespace": False,
+                                         "line": self.line(node), "snippet": self.snippet(node)})
+            return True
+        if typ == "file_scoped_namespace_declaration":
+            name = self.text(node.child_by_field_name("name"))
+            if name:
+                self.scopes.append(name)  # applies to the remainder of the file
+            return True
+        if typ == "namespace_declaration":
+            self.scoped(node, self.text(node.child_by_field_name("name")), False, skip=("identifier", "qualified_name"))
+            return True
+        if typ in _CLASS_TYPES["csharp"]:
+            name = self.text(node.child_by_field_name("name"))
+            if name:
+                self.scoped(node, name, True, skip=("identifier",))
+                return True
+        if typ in ("method_declaration", "constructor_declaration", "local_function_statement"):
+            name, body = self.text(node.child_by_field_name("name")), node.child_by_field_name("body")
+            if name and body:
+                self.function(name, node, body)
+                return True
+        return False
+
+    def visit_rust(self, node, typ):
+        if typ == "use_declaration":
+            self.use_rust(node)
+            return True
+        if typ == "mod_item":
+            name, body = self.text(node.child_by_field_name("name")), node.child_by_field_name("body")
+            if not body:
+                key = self.add_dependency(node, "mod " + name) if name else None
+                if key:
+                    self.imports.append({"id": key, "source": "mod " + name, "segments": ["self", name], "bound": name,
+                                         "module_declaration": True, "line": self.line(node), "snippet": self.snippet(node)})
+                return True
+            self.scoped(body, name, False)
+            return True
+        if typ in ("impl_item", "trait_item"):
+            owner = node.child_by_field_name("type") if typ == "impl_item" else node.child_by_field_name("name")
+            name = self.text(owner).split("<", 1)[0].strip()
+            body = node.child_by_field_name("body")
+            if name and body:
+                self.scoped(body, name, True)
+                return True
+        if typ == "function_item":
+            name, body = self.text(node.child_by_field_name("name")), node.child_by_field_name("body")
+            if name and body:
+                self.function(name, node, body)
+                return True
+        return False
+
+    # ------------------------------------------------------------------ shapes
+    def _parameters(self, node):
         signature = node.child_by_field_name("value") if node.type == "variable_declarator" else node
-        if self.language == "cpp":
+        if self.family == "c":
             signature = node.child_by_field_name("declarator")
             while signature and signature.type != "function_declarator":
                 signature = signature.child_by_field_name("declarator")
         parameters = signature.child_by_field_name("parameters") if signature else None
         if parameters is None and signature:
             parameters = signature.child_by_field_name("parameter")
-        items = parameters.named_children if parameters and parameters.type in ("formal_parameters", "parameter_list") else ([parameters] if parameters else [])
+        items = parameters.named_children if parameters and parameters.type in ("formal_parameters", "parameter_list", "parameters") else ([parameters] if parameters else [])
+        return signature, [item for item in items if item.type not in ("comment", "line_comment", "block_comment", "attribute_item")]
+
+    def _parameter_name(self, item):
+        if item.type == "identifier":
+            return self.text(item)
+        if item.type == "self_parameter":
+            return "self"
+        identifier = item.child_by_field_name("pattern") or item.child_by_field_name("declarator") or item.child_by_field_name("name")
+        if self.family == "c":
+            # int *values, const T& item and int grid[4] still name a parameter.
+            while identifier is not None and identifier.type in ("pointer_declarator", "reference_declarator", "array_declarator"):
+                inner = identifier.child_by_field_name("declarator")
+                if inner is None:
+                    inner = next((child for child in identifier.named_children if child.type == "identifier"), None)
+                identifier = inner
+        return self.text(identifier) if identifier is not None and identifier.type == "identifier" else None
+
+    def shape(self, node, body):
+        from .repository_learning import evidence_lines
+        signature, items = self._parameters(node)
         entries = []
         for item in items[:30]:
-            identifier = item if item.type == "identifier" else item.child_by_field_name("pattern") or item.child_by_field_name("declarator")
-            name = self.text(identifier) if identifier and identifier.type == "identifier" else "[pattern or unnamed]"
+            name = self._parameter_name(item) or "[pattern or unnamed]"
             entries.append({"name": name, "kind": "named" if name != "[pattern or unnamed]" else "pattern", "line": self.line(item)})
         returns, features = [], []
+
         def walk(current):
-            if current.type in ("function_definition", "function_declaration", "function_expression", "arrow_function", "lambda_expression", "class_declaration"):
+            if current.type in _NESTED_BODIES:
                 return
-            if current.type == "return_statement":
+            if current.type in _RETURNS:
                 returns.append(self.line(current))
-            kinds = {"if_statement": "conditional", "for_statement": "loop", "for_in_statement": "loop",
-                     "for_range_loop": "loop", "while_statement": "loop", "do_statement": "loop",
-                     "switch_statement": "selection", "try_statement": "exception handling", "throw_statement": "raise",
-                     "await_expression": "await", "co_await_expression": "await"}
-            if current.type in kinds:
-                features.append({"kind": kinds[current.type], "line": self.line(current)})
+            if current.type in _FEATURES:
+                features.append({"kind": _FEATURES[current.type], "line": self.line(current)})
             for child in current.named_children:
                 walk(child)
         if body:
             walk(body)
-        is_async = None if self.language == "cpp" else bool(signature and any(child.type == "async" for child in signature.children))
+        if self.family == "c":
+            is_async = None
+        elif self.family == "ts":
+            is_async = bool(signature and any(child.type == "async" for child in signature.children))
+        else:
+            head = self.data[node.start_byte:(body.start_byte if body else node.end_byte)].decode("utf-8", errors="replace")
+            is_async = "async" in head.replace("(", " ").split()
         return {"parameters": entries, "parameters_truncated": len(items) > 30, "parameter_detail": "named_or_pattern",
                 "async": is_async, "return_lines": returns[:30], "returns_truncated": len(returns) > 30,
-                "return_detail": "explicit_only_arrow_expressions_excluded" if self.language != "cpp" else "explicit",
+                "return_detail": _RETURN_DETAIL[self.family],
                 "features": features[:30], "features_truncated": len(features) > 30,
                 "evidence_lines": evidence_lines(self.lines, [p["line"] for p in entries] + returns[:30] + [f["line"] for f in features[:30]])}
 
+    # ------------------------------------------------------------------ records
     def function(self, name, node, body):
-        if len(self.nodes) >= 600:
+        if len(self.nodes) >= MAX_FILE_NODES:
             self.truncated = True
             return
         qual = ".".join(self.scopes + [x[0] for x in self.stack] + [name])
@@ -176,41 +335,100 @@ class _TreeVisitor:
                            "fingerprint": hashlib.sha256(self.data[node.start_byte:node.end_byte]).hexdigest(),
                            "language": self.language, "shape": self.shape(node, body), "evidence": "static"})
         self.edges.append({"source": parent, "target": key, "kind": "defines", "evidence": "static", "path": self.path, "line": start})
-        # Bare-name matches remain inference, and ambiguities are not resolved.
-        if not self.stack and not self.class_depth and (self.language != "cpp" or "::" not in name):
+        owner = None
+        if not self.stack:
             short = name.rsplit("::", 1)[-1]
-            self.top_level.setdefault(short, []).append(key)
-        self.stack.append((name, key))
+            if self.class_depth:
+                owner = self.classes[-1] or None  # an unnamed type has no member index
+            elif self.family == "c" and "::" in name:
+                # void Widget::draw() defined outside the class body.
+                owner = ".".join(self.scopes + name.split("::")[:-1])
+            else:
+                # Bare-name matches remain inference, and ambiguities are not resolved.
+                self.top_level.setdefault(short, []).append(key)
+                if self.scopes:
+                    self.qualified.setdefault(".".join(self.scopes + [short]), []).append(key)
+            if owner:
+                self.members.setdefault(owner, {}).setdefault(short, []).append(key)
+        self.stack.append((name, key, owner))
         if body:
             self.visit(body)
         self.stack.pop()
 
+    def owner(self):
+        """The type whose member body is being read, if any."""
+        for _, _, owner in reversed(self.stack):
+            if owner:
+                return owner
+        return self.classes[-1] if self.classes else None
+
     def call(self, node):
-        if len(self.calls) >= 3000:
+        if len(self.calls) >= MAX_FILE_CALLS:
             self.truncated = True
             return
         func = node.child_by_field_name("function")
         if not func:
             return
-        base, attr = None, None
+        base, attr, member, scope = None, None, None, None
+        owner = self.owner()
         if func.type == "identifier":
             base = self.text(func)
-        elif self.language != "cpp" and func.type == "member_expression":
+            if owner and self.family in ("c", "csharp"):
+                member = base  # a bare name inside a member body may be an implicit member call
+        elif self.family == "ts" and func.type == "member_expression":
             obj, prop = func.child_by_field_name("object"), func.child_by_field_name("property")
-            if obj and obj.type == "identifier" and prop and prop.type == "property_identifier":
-                base, attr = self.text(obj), self.text(prop)
+            if obj and prop and prop.type == "property_identifier":
+                if obj.type == "identifier":
+                    base, attr = self.text(obj), self.text(prop)
+                elif obj.type == "this" and owner:
+                    member = self.text(prop)
+        elif self.family == "csharp" and func.type == "member_access_expression":
+            obj, prop = func.child_by_field_name("expression"), func.child_by_field_name("name")
+            if obj and prop and prop.type == "identifier":
+                if obj.type == "identifier":
+                    base, attr = self.text(obj), self.text(prop)
+                elif obj.type in ("this_expression", "this") and owner:
+                    member = self.text(prop)
+        elif self.family == "rust" and func.type == "field_expression":
+            obj, prop = func.child_by_field_name("value"), func.child_by_field_name("field")
+            if obj and prop and prop.type == "field_identifier":
+                if obj.type == "self" and owner:
+                    member = self.text(prop)
+                elif obj.type == "identifier":
+                    base, attr = self.text(obj), self.text(prop)
+        elif func.type == "qualified_identifier":
+            # C++ nests on the name side: a::b::c is (scope a, name (scope b, name c)).
+            parts, current = [], func
+            while current is not None and current.type == "qualified_identifier" and len(parts) < 12:
+                parts.append(self.text(current.child_by_field_name("scope")))
+                current = current.child_by_field_name("name")
+            if current is not None and current.type == "identifier" and parts and all(part.isidentifier() for part in parts):
+                scope, attr = "::".join(parts), self.text(current)
+        elif func.type == "scoped_identifier":
+            path, name = func.child_by_field_name("path"), func.child_by_field_name("name")
+            if path is not None and name is not None and name.type == "identifier":
+                written_scope = self.text(path)
+                if written_scope == "Self" and owner:
+                    member = self.text(name)
+                elif written_scope and all(part.isidentifier() for part in written_scope.split("::")):
+                    scope, attr = written_scope, self.text(name)
         args = node.child_by_field_name("arguments")
-        count = len([item for item in args.named_children if item.type != "comment"]) if args else None
+        count = len([item for item in args.named_children if item.type not in ("comment", "line_comment", "block_comment")]) if args else None
         raw_written = self.text(func) or "[complex call]"
         line = self.line(node)
-        self.calls.append({"caller": self.stack[-1][1] if self.stack else self.file_id, "base": base,
-                           "attribute": attr, "written": raw_written[:200], "written_truncated": len(raw_written) > 200,
-                           "written_arguments": count, "line": line, "snippet": self.snippet(node),
-                           "snippet_truncated": line <= len(self.lines) and len(self.lines[line - 1]) > 1000,
-                           "line_sha256": hashlib.sha256((self.lines[line - 1] if line <= len(self.lines) else "").encode("utf-8")).hexdigest()})
+        record = {"caller": self.stack[-1][1] if self.stack else self.file_id, "base": base,
+                  "attribute": attr, "written": raw_written[:200], "written_truncated": len(raw_written) > 200,
+                  "written_arguments": count, "line": line, "snippet": self.snippet(node),
+                  "snippet_truncated": line <= len(self.lines) and len(self.lines[line - 1]) > 1000,
+                  "line_sha256": hashlib.sha256((self.lines[line - 1] if line <= len(self.lines) else "").encode("utf-8")).hexdigest()}
+        if member and owner:
+            record["member"], record["member_of"] = member, owner
+        if scope:
+            record["scope"] = scope
+        self.calls.append(record)
 
     def add_dependency(self, node, source):
-        if len(self.nodes) >= 600:
+        if len(self.nodes) >= MAX_FILE_NODES:
             self.truncated = True
             return None
         line = self.line(node)
@@ -220,9 +438,10 @@ class _TreeVisitor:
             key += "#" + str(self.names[key])
         self.nodes.append({"id": key, "kind": "dependency", "name": source, "path": self.path,
                            "line": line, "sha256": self.digest, "language": self.language, "evidence": "static"})
-        self.edges.append({"source": self.file_id, "target": key, "kind": "includes" if self.language == "cpp" else "imports", "evidence": "static", "path": self.path, "line": line})
+        self.edges.append({"source": self.file_id, "target": key, "kind": "includes" if self.family == "c" else "imports", "evidence": "static", "path": self.path, "line": line})
         return key
 
+    # ------------------------------------------------------------------ imports
     def import_ts(self, node):
         source_node = node.child_by_field_name("source")
         source = self.text(source_node)
@@ -257,6 +476,59 @@ class _TreeVisitor:
             self.imports.append({"id": key, "source": source, "bound": bound, "symbol": symbol,
                                  "namespace": namespace, "line": self.line(node), "snippet": self.snippet(node)})
 
+    def require_ts(self, node, name, value):
+        """const tools = require("./tools") and const {a, b: c} = require("./tools") at module level."""
+        if self.stack or self.class_depth:
+            return
+        args = value.child_by_field_name("arguments")
+        items = [item for item in args.named_children if item.type != "comment"] if args else []
+        if len(items) != 1 or items[0].type != "string":
+            return
+        source = self.text(items[0])
+        if len(source) < 2 or source[0] not in "\"'" or source[-1] != source[0] or "\\" in source:
+            return
+        source = source[1:-1]
+        records = []
+        if name is not None and name.type == "identifier":
+            records.append((self.text(name), None, True))
+        elif name is not None and name.type == "object_pattern":
+            for item in name.named_children:
+                if item.type == "shorthand_property_identifier_pattern":
+                    records.append((self.text(item), self.text(item), False))
+                elif item.type == "pair_pattern":
+                    key_node, bound = item.child_by_field_name("key"), item.child_by_field_name("value")
+                    if key_node is not None and bound is not None and bound.type == "identifier" and key_node.type == "property_identifier":
+                        records.append((self.text(bound), self.text(key_node), False))
+        key = self.add_dependency(node, source)
+        if not key:
+            return
+        for bound, symbol, namespace in records or [(None, None, False)]:
+            self.imports.append({"id": key, "source": source, "bound": bound, "symbol": symbol, "namespace": namespace,
+                                 "commonjs": True, "line": self.line(node), "snippet": self.snippet(node)})
+
+    def commonjs_export(self, node):
+        """module.exports = {a, b: c}, module.exports.a = a and exports.a = a at module level."""
+        if self.stack or self.class_depth:
+            return
+        left, right = node.child_by_field_name("left"), node.child_by_field_name("right")
+        target = self.text(left)
+        if left is None or right is None:
+            return
+        if target == "module.exports" and right.type == "object":
+            for item in right.named_children:
+                if item.type == "shorthand_property_identifier":
+                    self.pending_exports.append((self.text(item), self.text(item)))
+                elif item.type == "pair":
+                    key_node, value = item.child_by_field_name("key"), item.child_by_field_name("value")
+                    if key_node is not None and value is not None and key_node.type == "property_identifier" and value.type == "identifier":
+                        self.pending_exports.append((self.text(key_node), self.text(value)))
+        elif target == "module.exports" and right.type == "identifier":
+            self.pending_exports.append(("default", self.text(right)))
+        elif target.startswith(("module.exports.", "exports.")) and right.type == "identifier":
+            exported = target.rsplit(".", 1)[-1]
+            if exported.isidentifier():
+                self.pending_exports.append((exported, self.text(right)))
+
     def include(self, node):
         path = node.child_by_field_name("path")
         if not path:
@@ -268,6 +540,50 @@ class _TreeVisitor:
         key = self.add_dependency(node, raw)
         if key:
             self.imports.append({"id": key, "source": source, "local": raw[0] == '"',
+                                 "line": self.line(node), "snippet": self.snippet(node)})
+
+    def use_rust(self, node):
+        argument = node.child_by_field_name("argument")
+        written = " ".join(self.text(argument).split())
+        if not argument or not written:
+            return
+        key = self.add_dependency(node, written[:300])
+        if not key:
+            return
+        records = []
+
+        def segments(item):
+            if item is None:
+                return []
+            if item.type == "scoped_identifier":
+                return segments(item.child_by_field_name("path")) + [self.text(item.child_by_field_name("name"))]
+            return [self.text(item)]
+
+        def flatten(item, prefix):
+            if len(records) >= 60:
+                return
+            if item.type == "use_as_clause":
+                path = prefix + segments(item.child_by_field_name("path"))
+                records.append((path, self.text(item.child_by_field_name("alias"))))
+            elif item.type == "scoped_use_list":
+                inner = prefix + segments(item.child_by_field_name("path"))
+                listing = item.child_by_field_name("list")
+                for child in (listing.named_children if listing else []):
+                    flatten(child, inner)
+            elif item.type == "use_list":
+                for child in item.named_children:
+                    flatten(child, prefix)
+            elif item.type == "use_wildcard":
+                records.append((prefix + segments(item.named_children[0] if item.named_children else None) + ["*"], None))
+            elif item.type == "self":
+                if prefix:
+                    records.append((prefix, prefix[-1]))
+            elif item.type in ("identifier", "scoped_identifier", "crate", "super"):
+                path = prefix + segments(item)
+                records.append((path, path[-1]))
+        flatten(argument, [])
+        for path, bound in records or [([], None)]:
+            self.imports.append({"id": key, "source": "::".join(path), "segments": path, "bound": bound,
                                  "line": self.line(node), "snippet": self.snippet(node)})
 
     def finish(self):

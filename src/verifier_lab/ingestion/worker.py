@@ -63,20 +63,38 @@ def _apply_sandbox(limits: Limits) -> None:
     socket.getaddrinfo = _blocked  # type: ignore[assignment]
 
 
-def dispatch(request: dict, data: bytes) -> dict:
+REPOSITORY_TREE_FORMATS = ("repository-typescript", "repository-tsx", "repository-jsx", "repository-cpp",
+                           "repository-c", "repository-csharp", "repository-rust")
+
+
+def parse_repository(fmt: str, data: bytes, dialect: str | None) -> dict:
+    """Read one repository source file as syntax. Never imports or runs it."""
+    if fmt == "repository-python":
+        from ..repository_map import parse_python
+        return parse_python(data, dialect or "source.py")
+    if fmt in REPOSITORY_TREE_FORMATS:
+        from ..repository_trees import parse_source
+        return parse_source(data, dialect or "source", fmt.removeprefix("repository-"))
+    if fmt == "repository-javascript":
+        # The tree-sitter grammar reads current syntax, class methods and CommonJS; the older
+        # pure-Python parser remains for installations that have only the javascript extra.
+        from ..repository_trees import parse_source
+        result = parse_source(data, dialect or "source.js", "javascript")
+        if str(result.get("error") or "").startswith("language parser unavailable"):
+            from ..repository_javascript import parse_javascript
+            return parse_javascript(data, dialect or "source.js")
+        return result
+    raise ValueError(f"unsupported format {fmt}")
+
+
+def dispatch(request: dict, data: bytes, *, sandboxed: bool = False) -> dict:
     from .isolation import IsolationUnavailable
     limits = Limits(**request["limits"])
     try:
-        _apply_sandbox(limits)
-        if request["format"] == "repository-python":
-            from ..repository_map import parse_python
-            out = {"ok": True, "extraction": parse_python(data, request.get("dialect") or "source.py")}
-        elif request["format"] in ("repository-typescript", "repository-tsx", "repository-jsx", "repository-cpp"):
-            from ..repository_trees import parse_source
-            out = {"ok": True, "extraction": parse_source(data, request.get("dialect") or "source", request["format"].removeprefix("repository-"))}
-        elif request["format"] == "repository-javascript":
-            from ..repository_javascript import parse_javascript
-            out = {"ok": True, "extraction": parse_javascript(data, request.get("dialect") or "source.js")}
+        if not sandboxed:
+            _apply_sandbox(limits)
+        if request["format"].startswith("repository-"):
+            out = {"ok": True, "extraction": parse_repository(request["format"], data, request.get("dialect"))}
         else:
             ext = run_in_process(request["format"], data, request.get("dialect"), limits)
             out = {"ok": True, "extraction": to_wire(ext)}
@@ -89,8 +107,56 @@ def dispatch(request: dict, data: bytes) -> dict:
     return out
 
 
+def _read_exact(stream, size: int) -> bytes | None:
+    chunks, remaining = [], size
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            return None
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def serve_batch(request: dict) -> int:
+    """Serve many repository files over one pipe pair: framed request in, framed JSON out.
+
+    Used only for trusted (portable) repository scans, where starting one process per file
+    dominates the scan time. The parent bounds each file's wall time and replaces a worker
+    that stops answering, so one bad file costs one result rather than the scan.
+    """
+    limits = Limits(**request["limits"])
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+    try:
+        _apply_sandbox(limits)
+    except Exception:
+        return 3
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 6000))
+    while True:
+        head = _read_exact(stdin, 4)
+        if head is None:
+            return 0
+        header = _read_exact(stdin, int.from_bytes(head, "big"))
+        if header is None:
+            return 0
+        item = json.loads(header)
+        data = _read_exact(stdin, int(item["size"]))
+        if data is None:
+            return 0
+        try:
+            out = dispatch({"format": item["format"], "dialect": item.get("dialect"), "limits": request["limits"]},
+                           data, sandboxed=True)
+        except Exception as exc:  # report and keep serving; the parent records the file as unreadable syntax
+            out = {"ok": False, "error": "parser_error:" + type(exc).__name__}
+        payload = json.dumps(out, separators=(",", ":")).encode("utf-8")
+        stdout.write(len(payload).to_bytes(4, "big") + payload)
+        stdout.flush()
+
+
 def main(argv: list[str]) -> int:
     request = json.loads(argv[1])
+    if request.get("batch"):
+        return serve_batch(request)
     data = sys.stdin.buffer.read()
     out = dispatch(request, data)
     sys.stdout.write(json.dumps(out))
