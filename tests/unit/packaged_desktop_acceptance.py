@@ -123,11 +123,19 @@ try:
             caller = next(item for item, row in app.caller_ids.items() if row["caller_id"] == "function:app/main.py:Runner.run")
             app.caller_list.selection_set(caller); app.show_caller()
             assert "possible target: inferred" in app.caller_text.get("1.0", "end")
-            app.route_from_caller()
+            # Possible callers -> the written call in source -> Back -> the same caller -> its path in the map.
+            app.open_caller_source()
+            highlighted = app.source_text.get(*app.source_text.tag_ranges("selected_source"))
+            assert "helper(1)" in highlighted and app.tabs.index("current") == 1 and app.controller.nodes[app.controller.selected]["kind"] == "callsite"
+            app.go_back(); assert app.controller.selected == helper
+            caller = next(item for item, row in app.caller_ids.items() if row["caller_id"] == "function:app/main.py:Runner.run")
+            app.caller_list.selection_set(caller); app.route_from_caller()
             route = app.controller.route
             assert route["status"] == "ready" and route["steps"][-1]["node_id"] == helper and route["steps"][-1]["via"]["evidence"] == "inferred"
-            assert "different path" not in route["message"]
-            app.open_caller_source(); assert "helper(1)" in app.source_text.get("1.0", "end") and app.tabs.index("current") == 1
+            assert "different path" not in route["message"] and app.tabs.index("current") == 5
+            assert app.controller.selected == "function:app/main.py:Runner.run", "the path opens at its start"
+            app.move_step(1); assert app.controller.selected == helper
+            app.open_step_source(); assert "helper(1)" in app.source_text.get(*app.source_text.tag_ranges("selected_source"))
             app.select("function:app/main.py:Runner.run"); app.calls.selection_set(1); app.follow_call("target_id"); assert app.controller.selected == helper
             app.scope.set("Repository overview"); app.draw_graph(); app.scope.set("Around selection"); app.draw_graph()
             assert app.canvas.find_withtag("graph_node")
