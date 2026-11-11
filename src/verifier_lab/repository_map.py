@@ -237,6 +237,8 @@ def _walk(root: Path, limits: ScanLimits, cover: _Coverage, cancelled, progress)
             rel = prefix + name
             if name.startswith("."):
                 cover.skip("hidden_directory", rel)
+            elif name == "__pycache__":
+                cover.skip("bytecode_cache_directory", rel)  # counted apart so it does not crowd out real examples
             elif name in limits.skip_directories or (limits.detect_build_trees and name.startswith("cmake-build")):
                 cover.skip("vendor_or_build_directory", rel)
             elif _link(base / name):

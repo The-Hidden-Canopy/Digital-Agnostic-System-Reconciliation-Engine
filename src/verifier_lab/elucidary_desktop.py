@@ -359,6 +359,7 @@ SKIP_REASONS = {
     "hidden_directory": "Folders whose name starts with a dot (not opened)",
     "hidden_file": "Files whose name starts with a dot (not read)",
     "vendor_or_build_directory": "Dependency, build-output or virtual-environment folders (not opened)",
+    "bytecode_cache_directory": "Python bytecode cache folders (not opened)",
     "linked_directory": "Folder links or junctions (never followed)",
     "linked_file": "File links (never followed)",
     "unreadable_directory": "Folders the scan could not list",
@@ -500,7 +501,7 @@ class DesktopApp:
         ttk.Label(settings, text="Parsing").pack(side="left")
         parsing_options = (("Choose a parsing option", "Trusted repositories only: no parser sandbox") if sys.platform == "win32" else
                            ("Required Linux sandbox", "Trusted development: no Linux sandbox"))
-        self.isolation_box = ttk.Combobox(settings, textvariable=self.isolation, state="readonly", width=38, values=parsing_options)
+        self.isolation_box = ttk.Combobox(settings, textvariable=self.isolation, state="readonly", width=44, values=parsing_options)
         self.isolation_box.pack(side="left", padx=4)
         ttk.Label(settings, text="Level").pack(side="left")
         level = ttk.Combobox(settings, textvariable=self.level, state="readonly", width=15, values=("Getting started", "Explore together", "Technical"))
@@ -543,21 +544,25 @@ class DesktopApp:
         ttk.Label(edge_controls, text="Pan:").pack(side="left", padx=(8, 0))
         for label, dx, dy in (("←", .15, 0), ("↑", 0, .15), ("↓", 0, -.15), ("→", -.15, 0)):
             ttk.Button(edge_controls, text=label, width=3, command=lambda x=dx, y=dy: self.pan_map(x, y)).pack(side="left")
-        self.canvas = tk.Canvas(left, background="#101629", height=300, highlightthickness=1, takefocus=True)
+        # The map and the item browser share the left side; the divider between them can be dragged.
+        left_split = ttk.Panedwindow(left, orient="vertical"); left_split.pack(fill="both", expand=True)
+        map_pane, browse_pane = ttk.Frame(left_split), ttk.Frame(left_split)
+        left_split.add(map_pane, weight=3); left_split.add(browse_pane, weight=2)
+        self.canvas = tk.Canvas(map_pane, background="#101629", height=230, highlightthickness=1, takefocus=True)
         self.canvas.pack(fill="both", expand=True); self.canvas.bind("<Configure>", lambda _: self.draw_graph())
         self.canvas.bind("<ButtonPress-1>", self.begin_pan); self.canvas.bind("<B1-Motion>", self.drag_pan)
         self.canvas.bind("<ButtonRelease-1>", lambda _: setattr(self, "drag_origin", None))
         for key, dx, dy in (("Left", .15, 0), ("Up", 0, .15), ("Down", 0, -.15), ("Right", -.15, 0)):
             self.canvas.bind("<" + key + ">", lambda _, x=dx, y=dy: self.pan_map(x, y))
-        ttk.Label(left, text="Solid: source facts · dashed gold: inferred · arrows: recorded direction · highlighted: path. An orange ring marks a label needing review. Drag empty space or use pan controls; the item and Links lists support keyboard navigation.", wraplength=450).pack(anchor="w")
-        ttk.Label(left, textvariable=self.map_status, wraplength=620).pack(anchor="w")
-        find = ttk.Frame(left); find.pack(fill="x")
+        ttk.Label(map_pane, text="Solid: source facts · dashed gold: inferred · arrows: recorded direction · highlighted: path. An orange ring marks a label needing review. Drag empty space or use pan controls; the item and Links lists support keyboard navigation.", wraplength=620).pack(anchor="w")
+        ttk.Label(map_pane, textvariable=self.map_status, wraplength=620).pack(anchor="w")
+        find = ttk.Frame(browse_pane); find.pack(fill="x", pady=(4, 0))
         ttk.Label(find, text="Find item").pack(side="left")
         ttk.Entry(find, textvariable=self.search).pack(side="left", fill="x", expand=True, padx=4)
         self.search.trace_add("write", self.search_changed)
         self.tree_note = tk.StringVar(value="")
-        ttk.Label(left, textvariable=self.tree_note, wraplength=620).pack(anchor="w")
-        browser = ttk.Frame(left); browser.pack(fill="both", expand=True)
+        ttk.Label(browse_pane, textvariable=self.tree_note, wraplength=620).pack(anchor="w")
+        browser = ttk.Frame(browse_pane); browser.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(browser, columns=("kind", "path"), show="tree headings", height=8, selectmode="browse")
         self.tree.heading("#0", text="Name or label"); self.tree.heading("kind", text="Type"); self.tree.heading("path", text="Source")
         self.tree.column("#0", width=220); self.tree.column("kind", width=85); self.tree.column("path", width=150)
