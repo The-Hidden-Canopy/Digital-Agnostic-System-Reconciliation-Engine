@@ -60,6 +60,20 @@ class CallRecord(MutableMapping):
     def get(self, key, default=None):
         return getattr(self, key, default) if key in _KNOWN else default
 
+    @classmethod
+    def site(cls, call, path, digest, target, basis, unresolved):
+        """The retained form of a written call, built without per-key dispatch."""
+        record = cls.__new__(cls)
+        record.written, record.line, record.snippet = call["written"], call["line"], call["snippet"]
+        record.written_truncated = call.get("written_truncated", False)
+        record.snippet_truncated = call.get("snippet_truncated", False)
+        record.written_arguments = call.get("written_arguments")
+        if "line_sha256" in call:
+            record.line_sha256 = call["line_sha256"]
+        record.path, record.sha256, record.evidence = path, digest, "static"
+        record.resolution, record.target_id, record.basis, record.unresolved_form = "inferred" if target else "unresolved", target, basis, unresolved
+        return record
+
     def __repr__(self):
         return "CallRecord(" + repr(dict(self)) + ")"
 
@@ -88,20 +102,29 @@ def compact_parsed(parsed: dict, path: str) -> None:
         edge["kind"], edge["evidence"], edge["path"] = sys.intern(edge["kind"]), sys.intern(edge["evidence"]), path
     for item in parsed["imports"]:
         item["id"] = ids.get(item["id"], item["id"])
-    lines, calls = {}, []
+    # Written calls stay plain dictionaries while they are linked (the fastest thing to read), slimmed to the
+    # keys that carry information; the ones a scan keeps become CallRecord objects.
+    lines, intern, slim_calls = {}, sys.intern, []
     for call in parsed["calls"]:
-        record = CallRecord()
-        for key, value in call.items():
-            if key == "line_sha256" and not call.get("snippet_truncated"):
-                continue  # recomputed from the snippet when a map item needs it
-            if key in _SHARED and isinstance(value, str):
-                value = sys.intern(value)
-            elif key == "snippet":
-                value = lines.setdefault(call["line"], value)  # calls written on one line share its text
-            elif key == "caller":
-                value = ids.get(value, file_id if value == file_id else value)
-            elif key == "local_target":
-                value = ids.get(value, value)
-            record[key] = value
-        calls.append(record)
-    parsed["calls"] = calls
+        base, attribute, caller = call["base"], call["attribute"], call["caller"]
+        # A new dictionary: removing keys from the parsed one would not give its memory back.
+        slim = {"caller": ids.get(caller, file_id if caller == file_id else caller),
+                "base": intern(base) if base is not None else None,
+                "attribute": intern(attribute) if attribute is not None else None,
+                "written": intern(call["written"]), "written_arguments": call.get("written_arguments"), "line": call["line"],
+                "snippet": lines.setdefault(call["line"], call["snippet"])}  # calls written on one line share its text
+        if call.get("written_truncated"):
+            slim["written_truncated"] = True
+        if call.get("snippet_truncated"):
+            slim["snippet_truncated"], slim["line_sha256"] = True, call["line_sha256"]  # otherwise recomputed from the snippet
+        for key in ("member", "member_of", "scope"):
+            if call.get(key) is not None:
+                slim[key] = intern(call[key])
+        if call.get("local"):
+            slim["local"] = True
+        if call.get("expands"):
+            slim["expands"] = True
+        if "local_target" in call:
+            slim["local_target"] = ids.get(call["local_target"], call["local_target"])
+        slim_calls.append(slim)
+    parsed["calls"] = slim_calls

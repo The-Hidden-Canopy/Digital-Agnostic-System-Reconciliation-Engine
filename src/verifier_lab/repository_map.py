@@ -521,6 +521,8 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
                 return True
         return False
 
+    from .repository_records import CallRecord
+
     def link_call(file, call, target, basis, form=None):
         """Record the written call (static) and, when a rule chose one, its candidate target (inferred)."""
         caller = node_by_id.get(call["caller"])
@@ -541,10 +543,7 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
         unresolved = None if target else form or ("complex" if not (call.get("base") or call.get("member") or call.get("scope")) else
                                                    "member" if (call.get("attribute") or call.get("member")) else "name")
         if sl.compact_records:
-            # The parser's record becomes the call site: no second object per written call.
-            call["path"], call["sha256"], call["evidence"] = file["path"], file["digest"], "static"
-            call["resolution"], call["target_id"], call["basis"], call["unresolved_form"] = "inferred" if target else "unresolved", target, basis, unresolved
-            caller["call_sites"].append(call)
+            caller["call_sites"].append(CallRecord.site(call, file["path"], file["digest"], target, basis, unresolved))
             return
         caller["call_sites"].append({"written": call["written"], "written_truncated": call.get("written_truncated", False), "written_arguments": call.get("written_arguments"),
             "path": file["path"], "line": call["line"], "snippet": call["snippet"], "snippet_truncated": call.get("snippet_truncated", False), "line_sha256": call["line_sha256"], "sha256": file["digest"],
@@ -718,9 +717,11 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
     # ---------------------------------------------------------------- C and C++
     cpp_files = {f["path"]: f for f in files if f["language"] in C_FAMILY}
     cpp_definitions, cpp_qualified, cpp_members, cpp_suffix = defaultdict(list), defaultdict(list), defaultdict(list), defaultdict(list)
+    cpp_linkable = defaultdict(list)  # definitions another file could name: not static, not in an unnamed namespace
     for f in cpp_files.values():
         for name, found in f["parsed"]["top_level"].items():
             cpp_definitions[name].extend((f, node_id) for node_id in found if node_id in f["ids"])
+            cpp_linkable[name].extend(node_id for node_id in found if node_id in f["ids"] and not node_by_id[node_id].get("file_local"))
         for name, found in f["parsed"].get("qualified", {}).items():
             parts = name.split(".")
             for start in range(len(parts) - 1):
@@ -762,10 +763,9 @@ def scan_repository(path: str, *, limits: Limits | None = None, scan_limits: Sca
                     target_id = matches[0]
                     basis = "unique qualified name across scanned files; overloads, templates, macros, compilation and linking are not resolved"
             elif not call["attribute"] and call["base"]:
-                here = [node_id for node_id in parsed["top_level"].get(call["base"], []) if node_id in ids]
+                here = [node_id for node_id in parsed["top_level"].get(call["base"], ()) if node_id in ids]
                 # A static or unnamed-namespace function in another file cannot be what this call names.
-                visible = [node_id for owner, node_id in cpp_definitions.get(call["base"], [])
-                           if owner is f or not node_by_id[node_id].get("file_local")]
+                visible = cpp_linkable.get(call["base"], ()) if not here else ()
                 if len(here) == 1:
                     target_id = here[0]
                     basis = "unique name defined in this file; overloads, macros and templates are not resolved"
