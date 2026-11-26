@@ -637,7 +637,7 @@ async function viewExport() {
   const dl = h("button", { class: "primary", text: "Download package (.zip)", onclick: async () => {
     try {
       const blob = await api("GET", "runs/" + enc(sel.value) + "/export", { blob: true });
-      const a = h("a", { href: URL.createObjectURL(blob), download: "verification-package.zip" }); document.body.append(a); a.click(); a.remove();
+      const url = URL.createObjectURL(blob); const a = h("a", { href: url, download: "verification-package.zip" }); document.body.append(a); try { a.click(); } finally { a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
       put(out, h("div", { class: "notice ok", text: "Package downloaded. It was generated from the pinned snapshot of that run." }));
     } catch (e) { put(out, errorBox(e)); }
   } });
@@ -900,8 +900,9 @@ const KERNELS = [["real", "Real verifier (the production rules)"], ["always_supp
   ["self_reference_allowed", "Negative control: a claim's own source counts as evidence"]];
 
 function downloadJson(name, obj) {
-  const a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(obj, null, 1)], { type: "application/json" })), download: name });
-  document.body.append(a); a.click(); a.remove();
+  const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 1)], { type: "application/json" }));
+  const a = h("a", { href: url, download: name });
+  document.body.append(a); try { a.click(); } finally { a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 }
 
 async function viewCampaign() {
