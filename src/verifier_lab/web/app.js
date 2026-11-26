@@ -68,6 +68,8 @@ const enc = encodeURIComponent;
 
 /* ------------------------------------------------------------------ state */
 const state = { candSel: new Set(), filters: { source: "", status: "PENDING", q: "" }, runSel: { claims: new Set(), sources: new Set() }, lastJobStates: {} };
+const REVIEW_PAGE_SIZE = 200;
+let reviewOffset = 0;
 let route = [];
 let renderSeq = 0;
 /* Out-of-order async renders must never overwrite a newer view: each view takes a ticket and checks it after every await. */
@@ -250,7 +252,7 @@ function authorForm(source, text) {
       const result = await api("POST", "candidates", { body: { source_id: source.id, attempt_id: source.attempt.id, ...span,
         interpretation: { predicate: "fact.equals", subject: subject.value, arguments: { expected: { kind: kind.value, value: v } } },
         reason: reason.value }, headers: { "Idempotency-Key": crypto.randomUUID() } });
-      state.filters = { source: "", status: "PENDING", q: "" };
+      state.filters = { source: "", status: "PENDING", q: "" }; reviewOffset = 0;
       location.hash = "#/review/" + enc(result.id); announce("Human interpretation created. Review and approval are still required.");
     } catch (err) { put(status, errorBox(err)); submit.disabled = false; }
   } }, h("label", { for: "a-source", text: "Select the source passage (read only)" }), passage, useSelection, selected,
@@ -266,23 +268,50 @@ function authorForm(source, text) {
 async function viewReview(selected, params) {
   const live = begin();
   setNav("review");
-  if (params.get("source")) state.filters.source = params.get("source");
+  if (params.get("source") && params.get("source") !== state.filters.source) { state.filters.source = params.get("source"); reviewOffset = 0; }
   const { items: sources } = await api("GET", "sources");
   const f = state.filters;
-  const qs = new URLSearchParams({ limit: "200" });
+  const qs = new URLSearchParams({ limit: String(REVIEW_PAGE_SIZE), offset: String(reviewOffset) });
   if (f.source) qs.set("source_id", f.source); if (f.status) qs.set("status", f.status); if (f.q) qs.set("q", f.q);
-  const list = await api("GET", "candidates?" + qs);
+  const validPage = (result, offset) => result && Array.isArray(result.items) &&
+    Number.isSafeInteger(result.total) && result.total >= 0 &&
+    Number.isSafeInteger(result.offset) && result.offset >= 0 && result.offset === offset &&
+    result.items.length <= REVIEW_PAGE_SIZE &&
+    (!result.items.length || result.items.length <= result.total - offset);
+  let list = await api("GET", "candidates?" + qs);
+  if (!live()) return;
+  // A decision can shrink the final page. Retry at most once, and only at a lower offset.
+  if (validPage(list, reviewOffset) && reviewOffset > 0 && !list.items.length) {
+    const lastOffset = Math.max(0, Math.floor((list.total - 1) / REVIEW_PAGE_SIZE) * REVIEW_PAGE_SIZE);
+    if (lastOffset < reviewOffset) {
+      reviewOffset = lastOffset;
+      qs.set("offset", String(reviewOffset));
+      list = await api("GET", "candidates?" + qs);
+      if (!live()) return;
+    }
+  }
+  const pageValid = validPage(list, reviewOffset);
+  const pageAvailable = pageValid && (list.items.length > 0 || (reviewOffset === 0 && list.total === 0));
+  const pageStatus = pageAvailable
+    ? `Showing ${list.items.length ? list.offset + 1 : 0}-${list.offset + list.items.length} of ${list.total} (denominator: current extractions only)`
+    : pageValid ? `No candidates returned on this page (${list.total} reported; refresh or change pages).`
+      : "Candidate page unavailable (invalid pagination response; refresh or change filters).";
+  if (!pageValid) list = { items: [], total: 0, offset: reviewOffset };
+  const page = (offset) => { reviewOffset = offset; return viewReview(null, new URLSearchParams()); };
   const left = h("div", {},
     h("form", { class: "row", onsubmit: (e) => { e.preventDefault(); } },
       h("label", { class: "sr-only", for: "f-src", text: "Source" }),
-      h("select", { id: "f-src", onchange: (e) => { f.source = e.target.value; viewReview(selected, new URLSearchParams()); } },
+      h("select", { id: "f-src", onchange: (e) => { f.source = e.target.value; reviewOffset = 0; viewReview(selected, new URLSearchParams()); } },
         h("option", { value: "", text: "All sources" }), sources.map((s) => h("option", { value: s.id, selected: s.id === f.source, text: s.name }))),
       h("label", { class: "sr-only", for: "f-st", text: "Status" }),
-      h("select", { id: "f-st", onchange: (e) => { f.status = e.target.value; viewReview(selected, new URLSearchParams()); } },
+      h("select", { id: "f-st", onchange: (e) => { f.status = e.target.value; reviewOffset = 0; viewReview(selected, new URLSearchParams()); } },
         ["PENDING", "DEFERRED", "APPROVED", "REJECTED", ""].map((s) => h("option", { value: s, selected: s === f.status, text: s || "Any status" }))),
       h("label", { class: "sr-only", for: "f-q", text: "Search keys" }),
-      h("input", { id: "f-q", type: "search", placeholder: "Search keys", value: f.q, onchange: (e) => { f.q = e.target.value; viewReview(selected, new URLSearchParams()); } })),
-    h("p", { class: "muted", role: "status", text: `Showing ${list.items.length} of ${list.total} (denominator: current extractions only)` }),
+      h("input", { id: "f-q", type: "search", placeholder: "Search keys", value: f.q, onchange: (e) => { f.q = e.target.value; reviewOffset = 0; viewReview(selected, new URLSearchParams()); } })),
+    h("p", { class: "muted", role: "status", text: pageStatus }),
+    (reviewOffset > 0 || list.total > REVIEW_PAGE_SIZE) ? h("div", { class: "row", role: "group", "aria-label": "Candidate pages" },
+      h("button", { type: "button", disabled: reviewOffset === 0, text: "Previous candidates", onclick: () => page(Math.max(0, reviewOffset - REVIEW_PAGE_SIZE)) }),
+      h("button", { type: "button", disabled: !pageValid || reviewOffset + REVIEW_PAGE_SIZE >= list.total, text: "Next candidates", onclick: () => page(reviewOffset + REVIEW_PAGE_SIZE) })) : null,
     h("ul", { class: "list", "aria-label": "Candidate claims" }, list.items.map((c) => {
       const eligible = c.status === "PENDING" && !(c.qualifiers || []).length;
       return h("li", { "aria-current": c.id === selected ? "true" : null },
@@ -295,7 +324,7 @@ async function viewReview(selected, params) {
             (c.qualifiers || []).length ? badge("qualifiers", "b-warn") : null)));
     })),
     h("div", { id: "bulk" }));
-  const right = h("div", { id: "cand", class: "card" }, h("p", { class: "muted", text: list.items.length ? "Select a candidate to see its exact source evidence." : "No candidates match. Import a source or change the filters." }));
+  const right = h("div", { id: "cand", class: "card" }, h("p", { class: "muted", text: list.items.length ? "Select a candidate to see its exact source evidence." : pageAvailable ? "No candidates match. Import a source or change the filters." : "This candidate page could not be displayed." }));
   if (!live()) return;
   put(main, h("h1", { text: "Review claims" }),
     h("div", { class: "notice", text: "A candidate is an unreviewed suggestion or human interpretation. Approving records what to test - it does not mean the statement is true. Editing changes the interpretation, never the source." }),
